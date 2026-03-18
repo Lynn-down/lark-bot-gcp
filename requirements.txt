@@ -1,0 +1,6 @@
+# Lark 开放平台 Python SDK（事件订阅 + 发消息）
+lark-oapi>=1.2.0
+# Web 服务（事件接收）
+flask>=3.0.0
+# 环境变量
+python-dotenv>=1.0.0
