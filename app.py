@@ -4,6 +4,7 @@ Lark 事件订阅服务：接收飞书消息事件，经业务逻辑处理后回
 """
 import os
 import re
+import random
 import json
 import logging
 from flask import Flask
@@ -50,23 +51,39 @@ GREETING_KEYWORDS = (
     "hi", "hello", "hey", "hiya", "yo",
 )
 
-# 常见问题/闲聊： (关键词列表, 回复文案)，语气偏欢快
+# 常见问题/闲聊：(关键词列表, 回复文案列表)，每次随机选一条，语气欢快
 INTENT_RESPONSES = (
     (
         ["你能干什么", "你能做什么", "你的功能", "有什么功能", "会做什么", "你能干嘛", "你能干啥", "有什么本领"],
-        "嘿嘿，我呀可以跟你打招呼、聊聊天～ 你问我「你能干什么」「今天怎么样」或者「介绍一下你自己」我都能接话！以后还会越来越能干哒 ✨",
+        [
+            "嘿嘿，我呀可以跟你打招呼、聊聊天～ 你问我「你能干什么」「今天怎么样」或者「介绍一下你自己」我都能接话！以后还会越来越能干哒 ✨",
+            "我会跟你打招呼、聊今天、聊心情～ 问「今天怎么样」「介绍一下你自己」都行！后面还会加更多技能哒～",
+            "目前就是聊聊天、回回问候啥的～ 你试试问我「今天怎么样」或「介绍一下你自己」！以后功能会越来越多的 😄",
+        ],
     ),
     (
         ["今天怎么样", "今天如何", "今天好吗", "今天怎样", "今天好不好"],
-        "今天也超级好呀～ 希望你今天也顺顺利利、开开心心的！☀️",
+        [
+            "今天也超级好呀～ 希望你今天也顺顺利利、开开心心的！☀️",
+            "今天不错哦～ 祝你一天都开开心心！",
+            "今天很好呀～ 你也加油，顺顺利利！",
+        ],
     ),
     (
         ["介绍一下你自己", "你是谁", "你叫什么", "自我介绍", "介绍下自己"],
-        "我是蹲在飞书里的一只小机器人～ 会回你问候、聊聊今天、说说心情啥的，语气还得欢快一点的那种！有啥想聊的尽管说～",
+        [
+            "我是蹲在飞书里的一只小机器人～ 会回你问候、聊聊今天、说说心情啥的，语气还得欢快一点的那种！有啥想聊的尽管说～",
+            "我是飞书里的小助手呀～ 能跟你打招呼、聊今天、聊心情，有啥想问的都可以跟我说～",
+            "一只在飞书里打工的小机器人～ 负责跟你唠唠嗑、回回问候、聊聊心情，想聊啥都行！",
+        ],
     ),
     (
         ["心情怎么样", "你心情", "心情如何", "开心吗", "你开心吗", "心情好不好"],
-        "心情棒棒的！能在这儿跟你聊天就挺开心的～ 你也保持好心情呀！😊",
+        [
+            "心情棒棒的！能在这儿跟你聊天就挺开心的～ 你也保持好心情呀！😊",
+            "超好的～ 跟你聊天就开心！你也天天开心哦！",
+            "很好呀～ 能跟你说话就开心，你也要开开心心的！",
+        ],
     ),
 )
 
@@ -124,17 +141,25 @@ def handle_im_message(data: P2ImMessageReceiveV1) -> None:
     sender_name = _get_sender_name(event)
     logger.info("received message chat_id=%s message_id=%s normalized=%s", chat_id, message_id, normalized)
 
-    # ---------- 问候 + 常见问题/闲聊（语气欢快） ----------
+    # ---------- 问候 + 常见问题/闲聊（随机选一条，语气欢快） ----------
     reply_content = None
     if _is_greeting(normalized):
         if sender_name:
-            reply_content = f"你好呀，{sender_name}～ 很高兴见到你！"
+            reply_content = random.choice([
+                f"你好呀，{sender_name}～ 很高兴见到你！",
+                f"嗨 {sender_name}～ 见到你真好！",
+                f"{sender_name} 你好呀～ 开心跟你聊天！",
+            ])
         else:
-            reply_content = "你好呀！很高兴见到你～"
+            reply_content = random.choice([
+                "你好呀！很高兴见到你～",
+                "嗨～ 见到你真好！",
+                "你好呀！开心跟你聊天～",
+            ])
     else:
-        for keywords, response in INTENT_RESPONSES:
+        for keywords, responses in INTENT_RESPONSES:
             if any(kw in normalized for kw in keywords):
-                reply_content = response
+                reply_content = random.choice(responses)
                 break
 
     if reply_content is None:
