@@ -1,17 +1,16 @@
 """
 Lark 事件订阅服务：接收飞书消息事件，经业务逻辑处理后回复。
 部署到 GCP VM 后，在飞书开发者后台配置「将事件发送至开发者服务器」并填写本服务的公网 URL。
-
-Skill：意图识别模糊化 + 回复随机化
-- 新增意图时用多组近义关键词，不用单一固定句式
-- 所有回复、确认、提示均通过 _pick() 随机选一条，避免刻板
+支持：docx/doc/wiki/sheets/base 全类型读取。
 """
+APP_VERSION = "v2-wiki-doc-sheets"  # 部署后 curl /version 可验证
 import os
 import re
 import random
 import json
 import time
 import logging
+from urllib.parse import urlparse, parse_qs
 from flask import Flask
 
 import requests
@@ -121,14 +120,16 @@ def get_message_by_id(message_id: str) -> dict | None:
     return data.get("data", {}).get("message")
 
 
-# 飞书云文档链接：支持 feishu.cn / larksuite.com 的 docx/wiki/doc
-DOC_URL_RE = re.compile(r"https?://[^\s?#]+/(?:docx|wiki|doc)/[A-Za-z0-9]+")
+# 飞书云文档/云表格链接：docx/wiki/doc/sheets/base
+DOC_URL_RE = re.compile(
+    r"https?://[^\s?#]+/(?:docx|wiki|doc|sheets|base)/[A-Za-z0-9_-]+"
+)
 
 
 def _extract_text_from_message_item(item: dict) -> str:
     """
-    从 im.message.list 的 item 提取可读文本（尽量）。
-    支持 body.content / content，便于在文本中查找文档链接。
+    从 im.message.list 的 item 提取可读文本 + 所有链接（post 的 href）。
+    便于在文本中查找文档链接。
     """
     try:
         body = item.get("body") or {}
@@ -137,11 +138,37 @@ def _extract_text_from_message_item(item: dict) -> str:
         if not content:
             return ""
         if isinstance(content, dict):
-            return (content.get("text") or "").strip() or str(content)
-        if msg_type == "text":
+            raw = (content.get("text") or "").strip() or str(content)
+        else:
             data = json.loads(content) if isinstance(content, str) else {}
-            return (data.get("text") if isinstance(data, dict) else content or "").strip() or content
-        return str(content) if content else ""
+            raw = (data.get("text") if isinstance(data, dict) else content or "").strip() or content
+        parts = [raw]
+        if isinstance(content, dict) and "post" in content:
+            post = content.get("post") or {}
+            for lang in ("zh_cn", "en_us", "ja_jp"):
+                node = post.get(lang) or {}
+                for row in node.get("content") or []:
+                    for elem in row if isinstance(row, list) else []:
+                        if isinstance(elem, dict) and elem.get("tag") == "a":
+                            href = elem.get("href") or ""
+                            if href:
+                                parts.append(href)
+        elif isinstance(content, str):
+            try:
+                data = json.loads(content)
+                if isinstance(data, dict) and "post" in data:
+                    post = data.get("post") or {}
+                    for lang in ("zh_cn", "en_us", "ja_jp"):
+                        node = post.get(lang) or {}
+                        for row in node.get("content") or []:
+                            for elem in row if isinstance(row, list) else []:
+                                if isinstance(elem, dict) and elem.get("tag") == "a":
+                                    href = elem.get("href") or ""
+                                    if href:
+                                        parts.append(href)
+            except Exception:
+                pass
+        return " ".join(p for p in parts if p)
     except Exception:
         return str(item.get("body") or item.get("content") or "")
 
@@ -156,10 +183,10 @@ def _pick(arr: list) -> str:
     return random.choice(arr) if arr else ""
 
 
-def read_docx_raw_content(doc_url_or_id: str) -> str:
-    """读取 docx 纯文本（只支持 docx 文档）。"""
-    m = re.search(r"/docx/([A-Za-z0-9]+)", doc_url_or_id)
-    doc_id = m.group(1) if m else doc_url_or_id
+def _read_docx(url_or_id: str) -> str:
+    """读取 docx 云文档纯文本。"""
+    m = re.search(r"/docx/([A-Za-z0-9_-]+)", url_or_id)
+    doc_id = m.group(1) if m else url_or_id
     r = requests.get(
         f"{OPEN_API_BASE}/docx/v1/documents/{doc_id}/raw_content",
         headers=_open_api_headers(),
@@ -167,8 +194,156 @@ def read_docx_raw_content(doc_url_or_id: str) -> str:
     )
     data = r.json()
     if data.get("code") != 0:
-        raise RuntimeError(f"raw_content failed: {data.get('msg')}")
+        raise RuntimeError(f"docx raw_content failed: {data.get('msg')}")
     return (data.get("data", {}).get("content") or "").strip()
+
+
+def _read_doc(url_or_id: str) -> str:
+    """读取旧版 doc 云文档纯文本。"""
+    m = re.search(r"/doc/([A-Za-z0-9_-]+)", url_or_id)
+    doc_token = m.group(1) if m else url_or_id
+    r = requests.get(
+        f"{OPEN_API_BASE}/doc/v2/{doc_token}/raw_content",
+        headers=_open_api_headers(),
+        timeout=15,
+    )
+    data = r.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"doc raw_content failed: {data.get('msg')}")
+    return (data.get("data", {}).get("content") or "").strip()
+
+
+def _read_sheet(url: str) -> str:
+    """读取云表格，转为文本（前若干行）。"""
+    m = re.search(r"/sheets/([A-Za-z0-9_-]+)", url)
+    if not m:
+        raise ValueError("invalid sheet URL")
+    spreadsheet_token = m.group(1)
+    sheet_id = ""
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    sheet_id = (qs.get("sheet", [""]) or [""])[0]
+    if not sheet_id:
+        r = requests.get(
+            f"{OPEN_API_BASE}/sheets/v3/spreadsheets/{spreadsheet_token}/sheets/query",
+            headers=_open_api_headers(),
+            timeout=15,
+        )
+        meta = r.json()
+        if meta.get("code") == 0:
+            d = meta.get("data") or {}
+            sheets = d.get("sheets") or d.get("items") or []
+            if sheets:
+                sheet_id = sheets[0].get("sheet_id", "")
+    if not sheet_id:
+        raise RuntimeError("could not get sheet_id from URL or metadata")
+    range_str = f"{sheet_id}!A1:Z500"
+    r = requests.get(
+        f"{OPEN_API_BASE}/sheets/v2/spreadsheets/{spreadsheet_token}/values/{range_str}",
+        headers=_open_api_headers(),
+        params={"valueRenderOption": "ToString", "dateTimeRenderOption": "FormattedString"},
+        timeout=15,
+    )
+    data = r.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"sheet values failed: {data.get('msg')}")
+    values = data.get("data", {}).get("valueRange", {}).get("values") or []
+    lines = ["\t".join(str(c) for c in row) for row in values]
+    return "\n".join(lines).strip()
+
+
+def _read_bitable(url: str) -> str:
+    """读取多维表格，取第一个表的前若干条记录转为文本。"""
+    m = re.search(r"/base/([A-Za-z0-9_-]+)", url)
+    if not m:
+        raise ValueError("invalid base URL")
+    app_token = m.group(1)
+    r = requests.get(
+        f"{OPEN_API_BASE}/bitable/v1/apps/{app_token}/tables",
+        headers=_open_api_headers(),
+        timeout=15,
+    )
+    data = r.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"bitable tables failed: {data.get('msg')}")
+    tables = data.get("data", {}).get("items") or []
+    if not tables:
+        return ""
+    table_id = tables[0].get("table_id", "")
+    if not table_id:
+        return ""
+    r = requests.get(
+        f"{OPEN_API_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/records",
+        headers=_open_api_headers(),
+        params={"page_size": 50},
+        timeout=15,
+    )
+    data = r.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"bitable records failed: {data.get('msg')}")
+    records = data.get("data", {}).get("items") or []
+    lines = []
+    for rec in records:
+        fields = rec.get("fields") or {}
+        line = " | ".join(f"{k}: {v}" for k, v in sorted(fields.items())[:10])
+        if line:
+            lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _read_wiki(url: str) -> str:
+    """
+    读取知识库 wiki 节点内容。
+    先调用 get_node 获取 obj_token 和 obj_type，再根据类型调用 docx/doc/sheet/bitable 接口。
+    """
+    m = re.search(r"/wiki/([A-Za-z0-9_-]+)", url)
+    if not m:
+        raise ValueError("invalid wiki URL")
+    node_token = m.group(1)
+    r = requests.get(
+        f"{OPEN_API_BASE}/wiki/v2/spaces/get_node",
+        headers=_open_api_headers(),
+        params={"token": node_token},
+        timeout=15,
+    )
+    data = r.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"wiki get_node failed: {data.get('msg')}")
+    node = data.get("data", {}).get("node") or {}
+    obj_token = node.get("obj_token", "")
+    obj_type = (node.get("obj_type") or "").lower()
+    if not obj_token:
+        raise RuntimeError("wiki node has no obj_token")
+    if obj_type == "docx":
+        return _read_docx(obj_token)
+    if obj_type == "doc":
+        return _read_doc(obj_token)
+    if obj_type == "sheet":
+        return _read_sheet(f"https://feishu.cn/sheets/{obj_token}")
+    if obj_type == "bitable":
+        return _read_bitable(f"https://feishu.cn/base/{obj_token}")
+    raise RuntimeError(f"wiki node type '{obj_type}' 暂不支持读取，需 doc/docx/sheet/bitable")
+
+
+def read_document_content(doc_url: str) -> str:
+    """
+    根据链接类型读取云文档/云表格内容。
+    支持：docx、doc、sheets、base、wiki（知识库，自动解析底层文档类型）。
+    """
+    doc_url = (doc_url or "").strip()
+    if not doc_url:
+        raise ValueError("empty doc_url")
+    if "/docx/" in doc_url:
+        return _read_docx(doc_url)
+    if "/doc/" in doc_url:
+        return _read_doc(doc_url)
+    if "/sheets/" in doc_url:
+        return _read_sheet(doc_url)
+    if "/base/" in doc_url:
+        return _read_bitable(doc_url)
+    if "/wiki/" in doc_url:
+        return _read_wiki(doc_url)
+    raise ValueError(f"unsupported doc URL type: {doc_url[:80]}")
 
 
 def reply_text(client: lark.Client, receive_id: str, receive_id_type: str, text: str) -> None:
@@ -204,10 +379,10 @@ _INTENT_FUNC = {
             "会打招呼、聊今天、聊心情～", "能聊问候、今天、心情这些～",
         ],
         [
-            "你问我「今天怎么样」「介绍一下你自己」都行！以后还会越来越能干哒 ✨",
-            "问「今天怎么样」或「介绍一下你自己」就行～ 后面还会加更多技能～",
-            "试试问我「今天怎么样」「介绍一下你自己」！以后功能会越来越多 😄",
-            "有啥想聊的尽管说～ 之后还会加新能力～",
+            "你问我「今天怎么样」「介绍一下你自己」都行！发云文档、云表格说「读一下」我也能读～",
+            "问「今天怎么样」或「介绍一下你自己」～ 发文档/表格链接说「读一下」我也能读～",
+            "试试问我「今天怎么样」「介绍一下你自己」，或发云文档/云表格说「读一下」！",
+            "有啥想聊的尽管说～ 云文档、云表格、多维表格我都能读～",
         ],
     ),
     "今天": (
@@ -290,12 +465,18 @@ def handle_im_message(data: P2ImMessageReceiveV1) -> None:
     chat_id = message.chat_id
     content = message.content
     parent_id = getattr(message, "parent_id", None) or ""
-    # 文本消息 content 为 JSON 字符串，如 {"text":"用户输入"}，群聊可能含 @_user_1 等
+    # 文本消息 content 为 JSON，如 {"text":"..."}；富文本含 {"post":{"zh_cn":{"content":[[{tag,a,href}]]}}}
     try:
-        body = json.loads(content) if content else {}
+        body = json.loads(content) if isinstance(content, str) else (content or {})
         raw_text = (body.get("text") or "").strip()
+        post = body.get("post") or {}
+        for lang in ("zh_cn", "en_us", "ja_jp"):
+            for row in (post.get(lang) or {}).get("content") or []:
+                for elem in (row if isinstance(row, list) else []):
+                    if isinstance(elem, dict) and elem.get("tag") == "a":
+                        raw_text += " " + (elem.get("href") or "")
     except Exception:
-        raw_text = (content or "").strip()
+        raw_text = (content or "").strip() if isinstance(content, str) else ""
 
     normalized = _normalize_text(raw_text)
     sender_name = _get_sender_name(event)
@@ -311,7 +492,7 @@ def handle_im_message(data: P2ImMessageReceiveV1) -> None:
     # 模糊意图：阅读文档（含 读/看看/查看/前文/上文/文档/链接 等）
     READ_DOC_KEYWORDS = (
         "阅读", "读", "看看", "查看", "打开", "读一下", "看看这个", "看看上面的", "前文", "上文",
-        "上面发的", "刚才发的", "这个文档", "那个文档", "文档链接", "链接", "帮我读", "帮我看",
+        "上面发的", "刚才发的", "这个文档", "那个文档", "云文档", "文档链接", "链接", "帮我读", "帮我看",
         "你读", "你看", "看一下", "读一下上面的", "前面的文档", "上面的链接", "看看链接", "打开链接",
         "看看文档", "阅读文档", "读文档", "看文档", "看一下文档", "阅读上文", "阅读前文",
     )
@@ -348,11 +529,24 @@ def handle_im_message(data: P2ImMessageReceiveV1) -> None:
                     if doc_url:
                         break
 
-            if doc_url and "/docx/" in doc_url:
-                text_content = read_docx_raw_content(doc_url)
-                excerpt = (text_content[:700] + "…") if len(text_content) > 700 else text_content
-                reply_content = (
-                    _pick(["我去看了", "读好啦", "看了", "读完了", "搞定", "收到", "看完啦", "搞定啦"])
+            if doc_url:
+                logger.info("reading doc_url=%s", doc_url[:80])
+                try:
+                    text_content = read_document_content(doc_url)
+                except Exception as e:
+                    logger.exception("read_document_content failed: %s", e)
+                    reply_content = (
+                        _pick(["读取出错了～ ", "读取时出错了～ ", "没读成功～ "])
+                        + f"原因：{str(e)[:120]}。"
+                        + _pick([
+                            "请确认文档已分享给应用/机器人，且应用有 docx/sheets/bitable 只读权限。",
+                            "检查飞书应用权限和文档分享设置～",
+                        ])
+                    )
+                else:
+                    excerpt = (text_content[:700] + "…") if len(text_content) > 700 else text_content
+                    reply_content = (
+                        _pick(["我去看了", "读好啦", "看了", "读完了", "搞定", "收到", "看完啦", "搞定啦"])
                     + _pick(["你发的文档", "那份文档", "上面的文档", "这份文档"])
                     + "～\n\n"
                     + _pick(["开头一部分", "文档开头", "内容片段", "前面一段", "前面一小段"])
@@ -363,16 +557,6 @@ def handle_im_message(data: P2ImMessageReceiveV1) -> None:
                         "要我做哪一步：总结 / 提炼 / 按模板生成？",
                         "接下来你希望我总结、提炼，还是按模板生成？",
                         "要我帮你总结、提炼要点，还是按模板生成文档？",
-                    ])
-                )
-            elif doc_url:
-                reply_content = (
-                    _pick(["找到链接了：", "看到链接了：", "链接在这："])
-                    + f"{doc_url}\n\n"
-                    + _pick([
-                        "这个是 wiki/doc 类型，我目前主要支持 docx 纯文本读取。你希望我做什么？",
-                        "不是 docx，我暂时只能读 docx～ 要不再发个 docx 我帮你读？",
-                        "我目前主要支持 docx～ 你发个 docx 链接我就能读。",
                     ])
                 )
             elif quoted_text:
@@ -471,6 +655,12 @@ def event():
 def health():
     """健康检查，便于负载均衡或监控。"""
     return {"status": "ok"}, 200
+
+
+@app.route("/version", methods=["GET"])
+def version():
+    """返回版本号，用于确认部署是否生效。"""
+    return {"version": APP_VERSION}, 200
 
 
 if __name__ == "__main__":
