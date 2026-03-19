@@ -4,3 +4,5 @@ lark-oapi>=1.2.0
 flask>=3.0.0
 # 环境变量
 python-dotenv>=1.0.0
+# OpenAPI calls (reaction / history / doc raw_content)
+requests>=2.31.0
