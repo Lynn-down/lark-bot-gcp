@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-邮件发送配置 - 使用腾讯企业邮
+邮件发送配置 - 使用163邮箱
 """
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -9,11 +9,13 @@ from email.mime.base import MIMEBase
 from email import encoders
 import os
 
-# SMTP配置 - 腾讯企业邮
-SMTP_SERVER = "smtp.exmail.qq.com"
+# SMTP配置 - 163邮箱
+SMTP_SERVER = "smtp.163.com"
 SMTP_PORT = 465
-SMTP_USER = "jyx@group-ultra.com"
-SMTP_PASSWORD = "lynn5121122"
+SMTP_USER = "18924538056@163.com"
+SMTP_PASSWORD = "MKpTGYXJZ2T9PjLB"  # 授权码
+
+DEFAULT_HR_EMAIL = "18924538056@163.com"
 
 
 def send_contract_email(to_email, contract_path, employee_name, contract_type):

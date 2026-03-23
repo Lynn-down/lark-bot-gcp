@@ -25,7 +25,8 @@ import requests
 import lark_oapi as lark
 
 # 导入合同生成器
-from contract_template_new import generate_labor_contract, check_missing_fields, generate_missing_prompt
+from contract_v2 import smart_extract_info, generate_labor_contract_v2
+from roster_module import query_member, get_roster_stats, init_roster
 from email_sender import send_contract_email
 DEFAULT_HR_EMAIL = "jyx@group-ultra.com"
 from lark_oapi.adapter.flask import *
@@ -472,6 +473,9 @@ class CompanyInfoManager:
 # 初始化公司信息管理器
 company_manager = CompanyInfoManager(COMPANY_INFO_FILE)
 
+# 初始化名册管理器
+init_roster()
+
 # ============ 工具函数定义 ============
 
 class ToolRegistry:
@@ -585,6 +589,35 @@ def get_current_time() -> str:
 )
 def get_company_summary() -> str:
     return company_manager.get_all_info_summary()
+
+@tool_registry.register(
+    name="query_member",
+    description="Query member info by name or position",
+    parameters={
+        "type": "object",
+        "properties": {
+            "keyword": {
+                "type": "string",
+                "description": "Name or position to search"
+            }
+        },
+        "required": ["keyword"]
+    }
+)
+def tool_query_member(keyword: str) -> str:
+    return query_member(keyword)
+
+@tool_registry.register(
+    name="get_roster_stats",
+    description="Get roster statistics",
+    parameters={
+        "type": "object",
+        "properties": {},
+        "required": []
+    }
+)
+def tool_get_roster_stats() -> str:
+    return get_roster_stats()
 
 # ============ 飞书 API 工具函数 ============
 
@@ -917,17 +950,35 @@ def process_with_llm(user_message: str, sender_name: str, sender_id: str = "") -
     elif intent == "ask_function":
         raw_response = """我可以帮你做这些事情：
 1. 查询公司信息（公司介绍、部门、规章制度、常见问答等）
-2. 更新公司信息（需要权限）
-3. 读取飞书文档/表格内容
-4. 回答HR相关问题
-5. 日常闲聊
+2. 查询人员信息（问"某某是谁"、"有多少实习生"等）
+3. 更新公司信息（需要权限）
+4. 读取飞书文档/表格内容
+5. 回答HR相关问题
+6. 日常闲聊
 
 你可以直接问我任何问题，比如：
 - "公司有哪些部门？"
+- "蒋雨萱是谁？"
+- "公司在职有多少人？"
 - "请假流程是什么？"
-- "介绍一下我们公司"
-- "WiFi密码是多少"
 或者直接发文档链接让我帮你阅读~"""
+
+    elif intent == "query_member":
+        keyword = parameters.get("keyword", "")
+        if not keyword:
+            # 尝试从消息中提取姓名
+            name_match = re.search(r"([\u4e00-\u9fa5]{2,4})(?:是(?:谁|哪个|什么职位)|的资料|的信息)", user_message)
+            if name_match:
+                keyword = name_match.group(1)
+        
+        # 检查是否是统计类查询
+        stats_keywords = ["统计", "多少", "几个", "数量", "人数", "总共", "一共"]
+        if any(kw in user_message for kw in stats_keywords):
+            raw_response = get_roster_stats()
+        elif keyword:
+            raw_response = query_member(keyword)
+        else:
+            raw_response = "请告诉我你想查询谁的信息，比如：\"蒋雨萱是谁？\""
     
     elif intent in ["read_document", "summarize_document"]:
         # 检查消息中是否有文档链接

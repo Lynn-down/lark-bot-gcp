@@ -25,7 +25,7 @@ FIELD_ALIASES = {
 REQUIRED_FIELDS = ["员工姓名", "岗位名称", "税前工资"]
 
 # 默认HR邮箱
-DEFAULT_HR_EMAIL = "jyx@group-ultra.com"
+DEFAULT_HR_EMAIL = "18924538056@163.com"
 
 
 def extract_contract_info(message: str) -> Tuple[Dict[str, str], List[str]]:
