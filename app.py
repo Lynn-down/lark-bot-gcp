@@ -810,6 +810,77 @@ def process_with_llm(user_message: str, sender_name: str, sender_id: str = "") -
     is_hr = is_hr_user(sender_name, sender_id)
     
     # Step 2: 根据意图执行相应操作
+    
+    # 合同生成特殊处理：直接返回，不经过LLM润色
+    if intent == "generate_contract":
+        if not is_hr:
+            return "合同生成功能仅限HR使用~"
+        
+        import re
+        from datetime import datetime
+        
+        contract_data = {}
+        msg = user_message
+        
+        # 提取员工姓名
+        name_match = re.search(r"(?:姓名|叫|是)?[\s:：]*([\u4e00-\u9fa5]{2,4})(?:的|要|入职)?", msg)
+        if name_match:
+            contract_data["员工姓名"] = name_match.group(1).strip()
+        
+        # 提取岗位
+        pos_match = re.search(r"(?:岗位|职位|做|当|担任)[\s:：]*([\u4e00-\u9fa5a-zA-Z]{2,15})", msg)
+        if pos_match:
+            contract_data["岗位名称"] = pos_match.group(1).strip()
+        
+        # 提取工资
+        salary_match = re.search(r"(\d{4,6})[\s元\/月]*", msg)
+        if salary_match:
+            contract_data["税前工资"] = salary_match.group(1)
+        
+        # 提取日期
+        date_match = re.search(r"(\d{4})[-\/年](\d{1,2})[-\/月](\d{1,2})", msg)
+        if date_match:
+            contract_data["签订日期"] = f"{date_match.group(1)}-{date_match.group(2).zfill(2)}-{date_match.group(3).zfill(2)}"
+        else:
+            contract_data["签订日期"] = datetime.now().strftime("%Y-%m-%d")
+        
+        # 默认值
+        contract_data["工作地点"] = "北京市"
+        contract_data["合同年限"] = "3"
+        contract_data["试用期月数"] = "3"
+        contract_data["身份证号"] = "XXX"
+        contract_data["户籍地址"] = "XXX"
+        contract_data["联系地址"] = "XXX"
+        contract_data["手机号"] = "XXX"
+        contract_data["岗位职责描述"] = "详见岗位说明书"
+        
+        # 检查必填字段
+        missing = check_missing_fields(contract_data)
+        
+        if missing:
+            return generate_missing_prompt(missing)
+        
+        # 信息完整，返回固定消息
+        employee_name = contract_data["员工姓名"]
+        
+        # 在后台生成合同并发送邮件（不阻塞回复）
+        import threading
+        def generate_and_send():
+            try:
+                docx_path = generate_labor_contract(contract_data)
+                send_contract_email(
+                    to_email=DEFAULT_HR_EMAIL,
+                    contract_path=docx_path,
+                    employee_name=employee_name,
+                    contract_type="劳动合同"
+                )
+            except Exception as e:
+                logger.error(f"合同生成或发送失败: {e}")
+        
+        threading.Thread(target=generate_and_send).start()
+        
+        return f"收到！{employee_name}的劳动合同正在制作中，稍后发送到 {DEFAULT_HR_EMAIL}"
+    
     raw_response = ""
     
     if intent == "query_company_info":
