@@ -8,7 +8,7 @@ Lark HR 小机器人 - v3.0 LLM驱动架构
 - 工具调用系统
 - LLM润色回复
 """
-APP_VERSION = "v3.0-llm-agent"
+APP_VERSION = "v4.0-llm-agent"
 
 import os
 import re
@@ -33,6 +33,15 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+# HR用户列表（可以访问入职流程TIPS详细内容）
+HR_USERS = ["蒋雨萱", "丁怡菲", "刘怡馨", "triplet", "戴祥和", "陈春宇"]
+
+def is_hr_user(sender_name, sender_id=""):
+    """判断用户是否是HR"""
+    if not sender_name:
+        return False
+    return any(hr_name in sender_name for hr_name in HR_USERS)
+
 
 # ============ 配置读取 ============
 ENCRYPT_KEY = os.environ.get("LARK_ENCRYPT_KEY", "")
@@ -175,10 +184,11 @@ class LLMClient:
 
 你的任务是将原始回复润色成自然、流畅的中文回复。要求：
 1. 保持信息的准确性和完整性
-2. 语气友好、易于理解
-3. 适当使用表情符号增加亲和力
-4. 结构清晰，便于阅读
-5. 直接输出润色后的回复，不要解释"""
+2. 语气亲切自然，像同事间对话，减少"请问"、"您好"等客气语
+3. 可以适当使用表情符号
+4. 结构清晰
+5. 直接输出润色后的回复，不要解释
+6. 回复简洁直接"""
 
         user_prompt = f"""用户消息：{user_message}
 识别意图：{intent}
@@ -754,19 +764,25 @@ def _normalize_text(raw_text: str) -> str:
     return text.lower()
 
 
-def _get_sender_name(event) -> str:
-    """从事件里获取发送者名称"""
+def _get_sender_info(event):
+    """从事件里获取发送者信息"""
     try:
         sender = getattr(event, "sender", None)
         if sender is None:
-            return ""
-        name = getattr(getattr(sender, "sender_id", None), "name", None) or getattr(sender, "name", None)
-        return (name or "").strip()
+            return {"name": "", "id": ""}
+        sender_id_obj = getattr(sender, "sender_id", None)
+        user_id = getattr(sender_id_obj, "user_id", "") if sender_id_obj else ""
+        name = getattr(sender_id_obj, "name", None) or getattr(sender, "name", None) or ""
+        return {"name": name.strip(), "id": user_id}
     except Exception:
-        return ""
+        return {"name": "", "id": ""}
+
+def _get_sender_name(event) -> str:
+    """从事件里获取发送者名称（兼容旧代码）"""
+    return _get_sender_info(event).get("name", "")
 
 
-def process_with_llm(user_message: str, sender_name: str) -> str:
+def process_with_llm(user_message: str, sender_name: str, sender_id: str = "") -> str:
     """
     使用 LLM 架构处理用户消息：
     1. 意图识别
@@ -780,6 +796,9 @@ def process_with_llm(user_message: str, sender_name: str) -> str:
     
     intent = intent_result.get("intent", "other")
     parameters = intent_result.get("parameters", {})
+    
+    # 判断是否是HR用户
+    is_hr = is_hr_user(sender_name, sender_id)
     
     # Step 2: 根据意图执行相应操作
     raw_response = ""
@@ -805,11 +824,14 @@ def process_with_llm(user_message: str, sender_name: str) -> str:
             raw_response = "请提供完整的更新信息，包括更新类型和具体内容。"
     
     elif intent == "greeting":
-        greetings = [
-            f"你好呀{sender_name}！很高兴见到你～我是你的HR小助手！",
-            f"嗨{sender_name}～ 见到你真好！有什么我可以帮你的吗？",
-            f"你好{sender_name}！开心跟你聊天～今天有什么想了解的？"
-        ]
+        if sender_name:
+            greetings = [
+                f"嗨{sender_name}！👋",
+                f"{sender_name}，来啦！",
+                f"哟，{sender_name}！"
+            ]
+        else:
+            greetings = ["嗨！👋", "来啦！", "啥事？"]
         raw_response = greetings[int(hash(user_message) % len(greetings))]
     
     elif intent == "ask_function":
@@ -897,17 +919,19 @@ def handle_im_message(data: P2ImMessageReceiveV1) -> None:
         raw_text = (content or "").strip() if isinstance(content, str) else ""
     
     normalized = _normalize_text(raw_text)
-    sender_name = _get_sender_name(event)
+    sender_info = _get_sender_info(event)
+    sender_name = sender_info.get("name", "")
+    sender_id = sender_info.get("id", "")
     
-    logger.info("received message chat_id=%s message_id=%s text=%s", 
-                chat_id, message_id, normalized[:50])
+    logger.info("received message from=%s chat_id=%s text=%s", 
+                sender_name, chat_id, normalized[:50])
     
     # 添加表情反应
     add_reaction(message_id, "STRIVE")
     
     # 使用新的 LLM 架构处理消息
     try:
-        reply_content = process_with_llm(normalized, sender_name)
+        reply_content = process_with_llm(normalized, sender_name, sender_id)
     except Exception as e:
         logger.exception("Error processing message: %s", e)
         reply_content = "抱歉，处理消息时出了点小问题，请稍后再试～"
