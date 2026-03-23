@@ -30,6 +30,299 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
+"""
+HR入职流程知识库（从入职流程TIPS.docx提取）
+"""
+
+HR_ONBOARDING_KB = {
+    "面试后": {
+        "keywords": ["面试", "初筛", "约面", "沟通"],
+        "content": """面试后流程：
+1. 添加微信话术：您好！我是北京极群科技HR，您在我司投递的XX岗位目前通过初筛，现与您沟通进一步的约面事宜。
+2. 询问薪资预期、到岗时间：您目前的薪资预期大概是多少？最快何时能到岗呢？"""
+    },
+    "谈薪材料": {
+        "keywords": ["谈薪", "个税", "流水", "社保", "收入证明"],
+        "content": """谈薪时需提供（实习生无需提供）：
+1. 个人所得税专项附加扣除信息 - 在个人所得税App录屏
+2. 近3-6个月银行流水
+3. 社保缴纳情况录屏"""
+    },
+    "制定合同": {
+        "keywords": ["合同", "制定", "身份证号", "户籍地址"],
+        "content": """制定合同需要信息：
+- 身份证号、户籍地址、联系地址、联系方式
+- 询问入职时间
+- 合同类型：劳动合同、劳务合同、实习合同
+- 制定好后发送到群与员工确认"""
+    },
+    "电子版材料": {
+        "keywords": ["电子版", "材料", "归档", "身份证", "学历证明"],
+        "content": """电子版材料提交清单：
+- 身份证正反面
+- 最高学历/学位证书
+- 前司离职证明（如无前段实习/工作，无需提供）
+- 在校证明/学生证（在校实习生提供）"""
+    },
+    "设备配置": {
+        "keywords": ["设备", "电脑", "配置", "笔记本"],
+        "content": """设备配置要求：
+- 实习生需自带电脑
+- 正职询问设备要求（一般设计和开发会配备）
+- 可提出合适配置，leader审核通过后将在入职前后安装到工位
+- 也可自带设备"""
+    },
+    "入职当天": {
+        "keywords": ["入职当天", "携带材料", "纸质版", "10点"],
+        "content": """入职当天流程：
+1. 上午10点到达东升大厦A座4楼
+2. 楼下和门卫说一声帮忙开门，电梯上四楼
+3. 发消息给HR，会有HR来接待
+4. 携带材料：身份证原件、最高学历/学位证书原件、离职证明原件、身份证号、银行卡号、收款银行、收款银行开户所在地址、收款银行预留手机号
+5. 安排工位"""
+    },
+    "办公准备": {
+        "keywords": ["办公准备", "lark", "飞书", "欢迎"],
+        "content": """办公准备流程：
+1. 10点接人
+2. 合同打印一式两份，签署盖章后归档
+3. 其他材料复印一份归档
+4. 协助LARK配置，邀请进企业，在群里欢迎，告知leader联系方式
+5. 发送入职指引手册
+6. 拉进微信群
+7. 发送门禁、餐补申请，提醒行政审核
+8. 告知办公时间为9:00-18:00，中午午休为12:00-14:00"""
+    },
+    "离职流程": {
+        "keywords": ["离职", "离职协议", "离职证明", "到期"],
+        "content": """离职相关文档：
+- 离职协议模板
+- 离职证明模板
+- 离职邮件模板（主题：关于实习合同到期及离职手续办理的通知）
+- 工作交接、资产归还、流程办理"""
+    }
+}
+
+def query_hr_onboarding(keyword: str = "") -> str:
+    """查询HR入职流程信息"""
+    if not keyword:
+        return "HR入职流程包含：面试后、谈薪材料、制定合同、电子版材料、设备配置、入职当天、办公准备、离职流程。请告诉我具体想了解哪个环节？"
+    
+    keyword_lower = keyword.lower()
+    matches = []
+    
+    for section, data in HR_ONBOARDING_KB.items():
+        # 检查关键词是否匹配
+        if any(kw in keyword_lower for kw in data["keywords"]):
+            matches.append(data["content"])
+    
+    if matches:
+        return "\n\n".join(matches[:2])  # 最多返回2个匹配结果
+    
+    # 如果没有精确匹配，返回概述
+    return "HR入职流程包含：面试后沟通、谈薪材料收集、合同制定、电子版材料归档、设备配置确认、入职当天接待、办公环境准备、离职流程。请告诉我具体想了解哪个环节？"
+
+"""
+员工入职指引知识库（从新员工入职指引手册提取）
+"""
+
+EMPLOYEE_ONBOARDING_KB = {
+    "公司信息": {
+        "keywords": ["公司", "介绍", "官网", "业务", "intent"],
+        "content": """公司基本信息：
+- 公司名称：北京极群科技有限公司（GroupUltra）
+- 核心产品：Intent — 面向海外市场的AI跨语言社交通讯应用
+- 办公地点：北京市海淀区中关村东路8号东升大厦AB座四层4161号
+- 联系邮箱：hr@group-ultra.com
+- 公司官网：https://intent.app/
+- 主要业务：AI翻译、语音克隆、跨语言即时通讯"""
+    },
+    "入职材料": {
+        "keywords": ["材料", "准备", "携带", "身份证", "学历"],
+        "content": """入职材料清单：
+
+电子版需提前提交：
+- 身份证正反面
+- 最高学历/学位证书
+- 个人手机号
+- 前司离职证明（如无前段实习/工作，无需提供）
+- 身份证号、户籍地址、联系地址
+- 在校证明/学生证（在校实习生提供）
+
+入职当天携带原件：
+- 身份证原件
+- 最高学历/学位证书原件
+- 离职证明原件
+- 护照号（如有）
+- 银行卡号、收款银行、收款银行开户所在地址、收款卡号、收款银行预留手机号"""
+    },
+    "设备要求": {
+        "keywords": ["设备", "电脑", "笔记本", "配置"],
+        "content": """设备配置要求：
+- 正职员工：公司通常配发笔记本电脑、显示器、其他外设。如有特殊配置需求（如Windows设备、更大内存等），请入职前与HR沟通。也可自带设备。
+- 实习生：需自行携带笔记本电脑，公司通常不为实习生配发笔记本电脑。如果自带电脑配置不足以满足岗位需求，请入职前与行政沟通。"""
+    },
+    "wifi": {
+        "keywords": ["wifi", "密码", "网络", "无线"],
+        "content": "WiFi连接信息：\n- WiFi名称：BJJQ\n- 密码：Bjjq.0914"
+    },
+    "lark": {
+        "keywords": ["lark", "飞书", "下载", "安装"],
+        "content": """Lark（飞书国际版）配置：
+- 公司使用Lark作为主要办公协作工具，邀请链接HR会发送给你
+- 手机下载：安卓搜索LARK官网并下载，苹果需使用外区账号，并挂梯子，在应用商店或官网下载
+- 电脑下载：Windows版、Mac Intel芯片版、Mac Apple芯片版，可联系HR获取安装包
+- 安装后即可加入公司组织"""
+    },
+    "打印机": {
+        "keywords": ["打印", "打印机"],
+        "content": "打印机配置：连上BJJQ的Wi-Fi后，打印的时候选择编号283的设备，无反应时，使用备用编号为6000的设备。"
+    },
+    "餐补": {
+        "keywords": ["餐补", "美团", "吃饭", "外卖"],
+        "content": """美团餐补使用：
+- 餐补标准：60元/天
+- 使用次数：一天可下单3次
+- 使用范围：外卖、团购、小象超市
+- 刷新时间：每日0点刷新，不顺延累计
+- 配置步骤：
+  1. 提前下载美团或美团企业版APP
+  2. 将手机号与姓名发送给HR
+  3. 打开【我的】—【企业服务】—【登录】—【绑定企业】—【输入手机号验证】
+- 建议：日常点单建议于11点左右下单，外卖地址填写：东升大厦A座左边外卖柜"""
+    },
+    "门禁": {
+        "keywords": ["门禁", "刷脸", "i友", "人脸识别"],
+        "content": """门禁办理流程：
+1. 将一张正面无妆免冠自拍电子照、姓名、手机号发送给HR
+2. 下载"i友未来社区"APP
+3. 进入后【企业认证】-【北京极群科技有限公司】-【提交审核】
+4. 审核通过后进行【人脸识别】
+5. 大概流程要走半天/一天，即第二天就可以刷脸上班
+
+门禁用于：进入东升大厦A座4楼办公区与一楼门禁"""
+    },
+    "饮水机": {
+        "keywords": ["饮水机", "茶水间", "喝水"],
+        "content": "饮水机位置：出门右转往前走，左手边会有茶水间，再往前走一小段，右手边有贩卖机。"
+    },
+    "卫生间": {
+        "keywords": ["卫生间", "厕所"],
+        "content": "卫生间位置：出门左转再右转，右手边是卫生间。"
+    },
+    "报销": {
+        "keywords": ["报销", "发票", "开票"],
+        "content": """发票报销事宜：
+- 根据发生的费用开具发票，大额需提前找+1沟通
+- 开票信息：
+  - 名称：北京极群科技有限公司
+  - 税号：91110108MABX9G0U5X
+  - 地址：北京市海淀区中关村东路8号东升大厦AB座四层4161号
+- 将发票发送到指定群中即可"""
+    },
+    "沟通融入": {
+        "keywords": ["沟通", "融入", "leader", "微信群"],
+        "content": """入职后沟通与融入：
+- 入职当天加入LARK群，HR会告知你的leader的联系方式
+- 与直属Leader进行熟悉，会有同事帮助onboarding
+- 建议提前了解公司产品Intent，下载体验
+- 团队有微信沟通群，入职后由HR拉入
+- 公司内部AI工具：群里有哆啦A梦bot，可以帮你查信息、查数据、写文档"""
+    }
+}
+
+def query_employee_onboarding(keyword: str = "") -> str:
+    """查询员工入职指引信息"""
+    if not keyword:
+        return "新员工入职指引包含：公司信息、入职材料、设备要求、WiFi配置、Lark使用、打印机、餐补、门禁、办公环境、报销、团队融入等。请告诉我具体想了解什么？"
+    
+    keyword_lower = keyword.lower()
+    matches = []
+    
+    for section, data in EMPLOYEE_ONBOARDING_KB.items():
+        # 检查关键词是否匹配
+        if any(kw in keyword_lower for kw in data["keywords"]):
+            matches.append(data["content"])
+    
+    if matches:
+        return "\n\n".join(matches[:2])  # 最多返回2个匹配结果
+    
+    # 如果没有精确匹配，进行模糊匹配
+    for section, data in EMPLOYEE_ONBOARDING_KB.items():
+        if keyword_lower in section.lower():
+            matches.append(data["content"])
+    
+    if matches:
+        return "\n\n".join(matches[:2])
+    
+    return "抱歉，没有找到相关信息。新员工入职指引包含：公司信息、入职材料、设备要求、WiFi配置、Lark使用、餐补、门禁、办公环境等。请告诉我具体想了解什么？"
+
+"""
+VPN配置知识库（从VPN配置教程提取）
+"""
+
+VPN_KB = {
+    "注意事项": {
+        "keywords": ["注意", "安全", "国产软件", "风险"],
+        "content": """VPN使用注意事项：
+- 使用前请确保设备上没有任何国产安全软件（例如腾讯电脑管家、360手机助手等），也不要用国产浏览器（百度浏览器、360安全浏览器等），他们可能会发现你使用了VPN并上报
+- 不要以任何形式在国内通讯平台发送节点IP信息"""
+    },
+    "下载安装": {
+        "keywords": ["下载", "安装", "clash", "app"],
+        "content": """VPN下载安装步骤：
+1. 前往：https://docs.800615.com/
+2. 根据自己的设备选择一个进行安装，注意一定要选【Clash版本】
+3. 点击后，选择下载地址（有4个下载地址，哪个快用哪个）
+4. 下载后，点击打开exe文件，并安装
+5. 按步骤安装好后，会弹出应用界面"""
+    },
+    "配置订阅": {
+        "keywords": ["配置", "订阅", "url", "导入"],
+        "content": """VPN配置步骤：
+1. iOS点击【订阅】/ Windows点击【配置】
+2. 联系@戴祥和获得URL地址
+3. 复制URL并粘贴
+4. iOS点击【导入】，Windows点击【下载】"""
+    },
+    "选择节点": {
+        "keywords": ["节点", "代理", "切换", "国家", "香港"],
+        "content": """选择VPN节点：
+1. 点击【代理】
+2. 展开【手动切换】组别
+3. 选择需要的国家（其他组请勿动）
+4. 注意：香港的节点无法使用GPT"""
+    },
+    "开启使用": {
+        "keywords": ["开启", "使用", "系统代理", "连接"],
+        "content": """开启VPN：
+1. 点击【首页】
+2. 打开【系统代理】
+3. 到这里你已经配置成功！
+4. 若有其他疑问，可联系@戴祥和
+
+套餐有效期至2027年01月26日"""
+    }
+}
+
+def query_vpn(keyword: str = "") -> str:
+    """查询VPN配置信息（所有人可用）"""
+    if not keyword:
+        return "VPN配置包含：注意事项、下载安装、配置订阅、选择节点、开启使用。请告诉我具体想了解哪个步骤？"
+    
+    keyword_lower = keyword.lower()
+    matches = []
+    
+    for section, data in VPN_KB.items():
+        # 检查关键词是否匹配
+        if any(kw in keyword_lower for kw in data["keywords"]):
+            matches.append(data["content"])
+    
+    if matches:
+        return "\n\n".join(matches[:3])  # VPN可以返回多点内容
+    
+    return "VPN配置步骤：\n1. 下载Clash版本客户端\n2. 联系@戴祥和获取订阅URL并导入\n3. 选择节点（注意香港节点无法使用GPT）\n4. 开启系统代理\n\n若有疑问联系@戴祥和"
+
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -110,8 +403,9 @@ class LLMClient:
         system_prompt = """你是一个HR助手的意图识别模块。请分析用户消息，识别其意图并提取参数。
 
 支持的意图类型：
-1. query_company_info - 查询公司信息（如公司介绍、联系方式、部门信息、规章制度、入职流程、入职材料等）
-   - 入职相关：入职流程、入职准备、新员工材料、报到流程等
+1. query_company_info - 查询公司信息（如公司介绍、联系方式、部门信息、规章制度、入职流程、入职材料、VPN配置等）
+   - 入职相关：入职流程、入职准备、新员工材料、报到流程、设备配置、餐补、门禁等
+   - VPN相关：VPN下载、配置、节点选择等
 2. update_company_info - 更新公司信息（如修改联系方式、添加新政策、更新FAQ等）
 3. read_document - 读取并分析飞书云文档/表格
 4. summarize_document - 总结文档内容
@@ -174,11 +468,13 @@ class LLMClient:
         system_prompt = f"""{tone_prompts.get(tone, tone_prompts["friendly_professional"])}
 
 你的任务是将原始回复润色成自然、流畅的中文回复。要求：
-1. 保持信息的准确性和完整性
+1. 保持信息的准确性和完整性，但不要扩展添加额外信息
 2. 语气友好、易于理解
 3. 适当使用表情符号增加亲和力
 4. 结构清晰，便于阅读
-5. 直接输出润色后的回复，不要解释"""
+5. 直接输出润色后的回复，不要解释
+6. 不要添加任何markdown符号（如#、*、-、等）
+7. 回复要简洁，不要重复"""
 
         user_prompt = f"""用户消息：{user_message}
 识别意图：{intent}
@@ -792,13 +1088,24 @@ def process_with_llm(user_message: str, sender_name: str) -> str:
     if intent == "query_company_info":
         query_type = parameters.get("query_type", "all")
         keyword = parameters.get("keyword", "")
-        # 根据用户消息内容智能判断查询类型
         msg_lower = user_message.lower()
-        if any(k in msg_lower for k in ["入职", "新员工", "报到", "流程", "准备材料"]):
-            query_type = "onboarding"
-        # 尝试获取用户部门（简化处理，实际可从飞书API获取）
-        user_dept = ""
-        raw_response = query_company_info(query_type, keyword, user_dept)
+        
+        # 判断是否是VPN相关查询
+        if any(k in msg_lower for k in ["vpn", "翻墙", "代理", "clash", "节点", "订阅"]):
+            raw_response = query_vpn(keyword or user_message)
+        # 判断是否是入职相关查询
+        elif any(k in msg_lower for k in ["入职", "新员工", "报到", "流程", "准备材料", "设备", "餐补", "门禁", "wifi", "lark", "报销"]):
+            # 这里简化处理，实际应该从飞书API获取用户部门
+            # 如果用户明确说自己是HR，或者查询HR相关内容，用HR知识库
+            if any(k in msg_lower for k in ["hr", "制定合同", "谈薪", "面试", "归档", "离职"]):
+                raw_response = query_hr_onboarding(keyword or user_message)
+            else:
+                # 默认使用员工入职指引
+                raw_response = query_employee_onboarding(keyword or user_message)
+        else:
+            # 其他公司信息查询
+            user_dept = ""
+            raw_response = query_company_info(query_type, keyword, user_dept)
     
     elif intent == "update_company_info":
         # 这里可以添加权限检查
