@@ -25,10 +25,9 @@ import requests
 import lark_oapi as lark
 
 # 导入合同生成器
-from contract_generator import generate_contract
-from contract_docx_generator import generate_contract_docx
-from smart_contract_extractor import parse_natural_language, DEFAULT_HR_EMAIL
-from email_sender import send_contract_with_fallback
+from contract_template_new import generate_labor_contract, check_missing_fields, generate_missing_prompt
+from email_sender import send_contract_email
+DEFAULT_HR_EMAIL = "jyx@group-ultra.com"
 from lark_oapi.adapter.flask import *
 from lark_oapi.api.im.v1 import *
 
@@ -42,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 # 最后生成的合同文件路径
 _last_generated_contract = None
+_last_email_status = None
 # HR用户列表（可以访问入职流程TIPS详细内容）
 HR_USERS = ["蒋雨萱", "丁怡菲", "刘怡馨", "triplet", "戴祥和", "陈春宇"]
 
@@ -969,6 +969,15 @@ def event():
 def health():
     """健康检查"""
     return {"status": "ok", "version": APP_VERSION}, 200
+
+
+@app.route("/check_email_status", methods=["GET"])
+def check_email_status():
+    """检查邮件发送状态"""
+    global _last_email_status
+    status = _last_email_status
+    _last_email_status = None  # 读取后清空
+    return status or {"status": "none"}, 200
 
 
 @app.route("/version", methods=["GET"])
