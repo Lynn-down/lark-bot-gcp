@@ -27,6 +27,8 @@ import lark_oapi as lark
 # 导入合同生成器
 from contract_generator import generate_contract
 from contract_docx_generator import generate_contract_docx
+from smart_contract_extractor import parse_natural_language, DEFAULT_HR_EMAIL
+from email_sender import send_contract_with_fallback
 from lark_oapi.adapter.flask import *
 from lark_oapi.api.im.v1 import *
 
