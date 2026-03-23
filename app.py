@@ -26,6 +26,7 @@ import lark_oapi as lark
 
 # 导入合同生成器
 from contract_generator import generate_contract
+from contract_docx_generator import generate_contract_docx
 from lark_oapi.adapter.flask import *
 from lark_oapi.api.im.v1 import *
 
@@ -36,6 +37,9 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# 最后生成的合同文件路径
+_last_generated_contract = None
 # HR用户列表（可以访问入职流程TIPS详细内容）
 HR_USERS = ["蒋雨萱", "丁怡菲", "刘怡馨", "triplet", "戴祥和", "陈春宇"]
 
