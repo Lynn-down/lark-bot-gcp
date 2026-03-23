@@ -23,9 +23,6 @@ from datetime import datetime
 
 import requests
 import lark_oapi as lark
-
-# 导入合同生成器
-from contract_generator import generate_contract
 from lark_oapi.adapter.flask import *
 from lark_oapi.api.im.v1 import *
 
@@ -123,8 +120,8 @@ class LLMClient:
 
 支持的意图类型：
 1. query_company_info - 查询公司信息（如公司介绍、联系方式、部门信息、规章制度、入职流程、入职材料等）
+   - 入职相关：入职流程、入职准备、新员工材料、报到流程等
 2. update_company_info - 更新公司信息（如修改联系方式、添加新政策、更新FAQ等）
-3. generate_contract - 生成合同（仅限HR使用），格式："生成劳动合同/劳务合同/实习合同，姓名：xxx，岗位：xxx，工资：xxx..."
 3. read_document - 读取并分析飞书云文档/表格
 4. summarize_document - 总结文档内容
 5. generate_from_template - 根据模板生成文档
