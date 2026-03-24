@@ -399,10 +399,19 @@ def process_message(user_message: str, user_id: str, sender_name: str,
         return handle_contract(merged, user_id, chat_id, msg_id)
 
     # 合同生成（仅HR）
+    # 排除纯能力询问："能出合同吗"、"还能出合同吗"、"你会合同吗" 等 → 交给 LLM 回答
+    _CONTRACT_INQUIRY_KWS = ["能", "会", "可以", "还能", "支持", "帮我", "能不能", "会不会", "可不可以"]
+    _is_contract_inquiry = (
+        any(kw in user_message for kw in _CONTRACT_INQUIRY_KWS)
+        and not any(kw in user_message for kw in ["帮我出", "帮我生成", "帮我做", "生成", "出一份", "做一份", "起草"])
+    )
     if any(kw in user_message for kw in ["合同", "劳动合同", "劳务合同", "实习合同"]):
-        if not is_hr:
+        if _is_contract_inquiry:
+            pass  # 能力询问，继续往下走交给 LLM
+        elif not is_hr:
             return "合同生成功能仅限HR使用哦～"
-        return handle_contract(user_message, user_id, chat_id, msg_id)
+        else:
+            return handle_contract(user_message, user_id, chat_id, msg_id)
 
     # 入职查询
     if any(kw in user_message for kw in ["入职", "新员工", "报到"]):
