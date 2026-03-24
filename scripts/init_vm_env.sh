@@ -39,7 +39,7 @@ PORT=7777
 # ── LLM 配置（已升级为 Claude 3.5 Sonnet）──────────────────
 LLM_API_URL=https://api.ablai.top/v1/chat/completions
 LLM_API_KEY=sk-ldMaqRyirDTiCHTwpFb26j4mvxHQwPUv81Ca4fzK9K30xAZl
-LLM_MODEL=claude-3-7-sonnet-20250219
+LLM_MODEL=claude-opus-4-6
 LLM_MAX_TOKENS=2000
 EOF
     echo "    .env 已写入。请立即编辑 LLM_API_KEY："
