@@ -604,7 +604,7 @@ def handle_message_read_event(data) -> None:
 
 
 def handle_message_updated_event(data) -> None:
-    """忽略消息编辑事件"""
+    """忽略消息编辑/撤回事件"""
     pass
 
 
@@ -613,15 +613,23 @@ handler = lark.EventDispatcherHandler.builder(ENCRYPT_KEY, VERIFICATION_TOKEN, l
     .register_p2_im_message_receive_v1(handle_im_message) \
     .register_p2_im_message_reaction_created_v1(handle_reaction_event) \
     .register_p2_im_message_message_read_v1(handle_message_read_event) \
-    .register_p2_im_message_updated_v1(handle_message_updated_event) \
+    .register_p2_im_message_recalled_v1(handle_message_updated_event) \
     .build()
 
 
 @app.route("/event", methods=["POST"])
 def event():
-    """飞书事件入口"""
-    resp = handler.do(parse_req())
-    return parse_resp(resp)
+    """飞书事件入口 — 未注册的事件类型静默返回 200"""
+    try:
+        resp = handler.do(parse_req())
+        return parse_resp(resp)
+    except Exception as e:
+        err = str(e)
+        if "processor not found" in err:
+            logger.debug(f"Unhandled event type (ignored): {err}")
+            return {"code": 0}, 200
+        logger.error(f"Event handler error: {e}")
+        return {"code": 500}, 500
 
 
 @app.route("/health", methods=["GET"])
