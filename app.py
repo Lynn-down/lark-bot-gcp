@@ -118,8 +118,24 @@ def add_reaction(message_id: str, emoji_type: str = "STRIVE") -> bool:
         return False
 
 
+def _make_card(text: str) -> dict:
+    """
+    把文本包装成飞书卡片（lark_md 格式）。
+    卡片支持：Markdown 表格、**加粗**、--- 分割线、emoji 等。
+    """
+    return {
+        "config": {"wide_screen_mode": True},
+        "elements": [
+            {
+                "tag": "div",
+                "text": {"content": text, "tag": "lark_md"}
+            }
+        ]
+    }
+
+
 def reply_text(chat_id: str, text: str) -> bool:
-    """发送文本消息"""
+    """发送卡片消息（lark_md，支持 Markdown 表格/加粗/分割线）"""
     try:
         headers = {
             "Authorization": f"Bearer {get_access_token()}",
@@ -130,8 +146,8 @@ def reply_text(chat_id: str, text: str) -> bool:
             headers=headers,
             json={
                 "receive_id": chat_id,
-                "msg_type": "text",
-                "content": json.dumps({"text": text})
+                "msg_type": "interactive",
+                "content": json.dumps(_make_card(text), ensure_ascii=False)
             },
             timeout=10
         )
@@ -147,7 +163,7 @@ def reply_text(chat_id: str, text: str) -> bool:
 
 
 def reply_to_message(parent_msg_id: str, text: str) -> bool:
-    """引用回复某条消息"""
+    """引用回复某条消息（卡片格式）"""
     try:
         headers = {
             "Authorization": f"Bearer {get_access_token()}",
@@ -157,8 +173,8 @@ def reply_to_message(parent_msg_id: str, text: str) -> bool:
             f"{OPEN_API_BASE}/im/v1/messages/{parent_msg_id}/reply",
             headers=headers,
             json={
-                "msg_type": "text",
-                "content": json.dumps({"text": text})
+                "msg_type": "interactive",
+                "content": json.dumps(_make_card(text), ensure_ascii=False)
             },
             timeout=10
         )
