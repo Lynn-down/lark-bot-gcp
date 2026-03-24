@@ -37,14 +37,24 @@ class RosterManager:
         return ""
     
     def query_by_name(self, name: str) -> Optional[Dict]:
-        """根据姓名查询人员信息"""
+        """根据姓名查询人员信息（优先在职记录）"""
         name = name.strip().lower()
+        best_match = None
         for row in self.data[1:]:  # 跳过表头
+            # 姓名字段和人员字段都尝试匹配
             row_name = self._get_field(row, "姓名").lower()
-            # 支持中英文名称匹配
-            if name in row_name or row_name in name:
-                return self._row_to_dict(row)
-        return None
+            row_member = self._get_field(row, "人员").lower()
+            candidate = row_name or row_member
+            if not candidate:
+                continue  # 两个字段都为空则跳过，避免空字符串误匹配
+            if name in candidate or candidate in name:
+                d = self._row_to_dict(row)
+                # 优先返回在职记录
+                if "在职" in d.get("工作状态", ""):
+                    return d
+                if best_match is None:
+                    best_match = d
+        return best_match
     
     def query_by_position(self, position: str) -> List[Dict]:
         """根据职位查询人员"""
@@ -123,7 +133,8 @@ class RosterManager:
     def format_person_info(self, person: Dict, is_hr: bool = False) -> str:
         """格式化人员信息"""
         lines = []
-        lines.append(f"【{person.get('姓名', 'N/A')}】")
+        display_name = person.get('姓名') or person.get('人员') or 'N/A'
+        lines.append(f"【{display_name}】")
 
         if person.get('合同职务'):
             lines.append(f"职务：{person['合同职务']}")
