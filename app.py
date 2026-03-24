@@ -238,8 +238,7 @@ def process_message(user_message: str, user_id: str, sender_name: str) -> str:
         return get_onboarding_info(is_hr)
     
     # 名册查询（直接处理，不经过LLM）
-    if any(kw in user_message for kw in ["是谁", "的资料", "的信息"]):
-        import re
+    if any(kw in user_message for kw in ["是谁", "的资料", "的信息", "职位", "岗位", "部门", "联系方式", "邮箱", "电话"]):
         names = re.findall(r'[\u4e00-\u9fa5]{2,4}', user_message)
         if names:
             return query_member(names[0])
@@ -353,8 +352,11 @@ def handle_im_message(data) -> None:
             if len(_processed_ids) > _MAX_PROCESSED:
                 _processed_ids.clear()
         
-        # 添加反应
-        add_reaction(msg_id, "STRIVE")
+        # 添加反应（静默失败，不影响主流程）
+        try:
+            add_reaction(msg_id, "STRIVE")
+        except Exception:
+            pass
         
         # 处理并回复
         reply = process_message(text, user_id, sender_name)
@@ -368,9 +370,15 @@ def handle_im_message(data) -> None:
         logger.exception(f"Handle message error: {e}")
 
 
+def handle_reaction_event(data) -> None:
+    """忽略表情回应事件（避免 SDK 报 processor not found）"""
+    pass
+
+
 # 飞书事件处理器
 handler = lark.EventDispatcherHandler.builder(ENCRYPT_KEY, VERIFICATION_TOKEN, lark.LogLevel.INFO) \
     .register_p2_im_message_receive_v1(handle_im_message) \
+    .register_p2_im_message_reaction_created_v1(handle_reaction_event) \
     .build()
 
 
