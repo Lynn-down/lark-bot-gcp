@@ -30,7 +30,7 @@ LARK_APP_ID=cli_a92beaa4c4399ed3
 LARK_APP_SECRET=txBH43PGnh0uyGhhprEuPf7akPYyuLjx
 
 # ── 事件订阅加密（若未开启可留空）────────────────────────────
-LARK_ENCRYPT_KEY=4rtAbffn36WiFZJkvvlWydULzpkbqhmk
+LARK_ENCRYPT_KEY=Le8ZpiFfINXgpRaWZ5ZSzdwaRB70tBaY
 LARK_VERIFICATION_TOKEN=zHMznyp90TxXBptJLB9TqgRCk4h5nCsQ
 
 # ── 服务端口 ────────────────────────────────────────────────
@@ -38,7 +38,7 @@ PORT=7777
 
 # ── LLM 配置（已升级为 Claude 3.5 Sonnet）──────────────────
 LLM_API_URL=https://api.ablai.top/v1/chat/completions
-LLM_API_KEY=REPLACE_WITH_NEW_KEY
+LLM_API_KEY=sk-ldMaqRyirDTiCHTwpFb26j4mvxHQwPUv81Ca4fzK9K30xAZl
 LLM_MODEL=claude-3-5-sonnet-20241022
 LLM_MAX_TOKENS=2000
 EOF
