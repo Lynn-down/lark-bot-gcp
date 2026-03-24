@@ -661,9 +661,13 @@ _OFFBOARDING_EXTRACT_PROMPT = (
 
 def _extract_offboarding_fields(user_message: str) -> dict:
     """LLM提取离职相关字段"""
+    current_year = datetime.now().year
     messages = [
-        {"role": "system", "content": _OFFBOARDING_EXTRACT_PROMPT},
-        {"role": "user",   "content": user_message},
+        {"role": "system", "content": (
+            _OFFBOARDING_EXTRACT_PROMPT +
+            f"\n\n当前年份是 {current_year} 年。用户未明确说明年份时，默认为 {current_year} 年。"
+        )},
+        {"role": "user", "content": user_message},
     ]
     try:
         resp    = llm_client_v2._call_api(messages, tools=None, temperature=0)

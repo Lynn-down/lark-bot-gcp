@@ -480,9 +480,13 @@ def extract_fields_via_llm(user_message: str, llm_client) -> tuple:
         (contract_type: str, fields: dict)
     """
     contract_type = detect_contract_type(user_message)
+    current_year  = datetime.now().year
     messages = [
-        {"role": "system", "content": CONTRACT_EXTRACT_SYSTEM_PROMPT},
-        {"role": "user",   "content": user_message}
+        {"role": "system", "content": (
+            CONTRACT_EXTRACT_SYSTEM_PROMPT +
+            f"\n\n当前年份是 {current_year} 年。用户未明确说明年份时，默认为 {current_year} 年。"
+        )},
+        {"role": "user", "content": user_message}
     ]
     try:
         resp = llm_client._call_api(messages, tools=None, temperature=0)
