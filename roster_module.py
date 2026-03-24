@@ -120,11 +120,11 @@ class RosterManager:
         
         return stats
     
-    def format_person_info(self, person: Dict) -> str:
+    def format_person_info(self, person: Dict, is_hr: bool = False) -> str:
         """格式化人员信息"""
         lines = []
         lines.append(f"【{person.get('姓名', 'N/A')}】")
-        
+
         if person.get('合同职务'):
             lines.append(f"职务：{person['合同职务']}")
         if person.get('工作类型'):
@@ -139,25 +139,51 @@ class RosterManager:
             lines.append(f"汇报给：{person['+1']}")
         if person.get('法律状态'):
             lines.append(f"合同类型：{person['法律状态']}")
-        
+        if person.get('学历'):
+            lines.append(f"学历：{person['学历']}")
+
+        if is_hr:
+            lines.append("")
+            lines.append("── HR专属信息 ──")
+            if person.get('月薪'):
+                lines.append(f"月薪：{person['月薪']} 元")
+            if person.get('日薪'):
+                lines.append(f"日薪：{person['日薪']} 元")
+            if person.get('年薪'):
+                lines.append(f"年薪：{person['年薪']} 元")
+            if person.get('到手工资'):
+                lines.append(f"到手工资：{person['到手工资']} 元")
+            if person.get('用人成本'):
+                lines.append(f"用人成本：{person['用人成本']} 元")
+            if person.get('身份证号'):
+                lines.append(f"身份证：{person['身份证号']}")
+            if person.get('收款银行'):
+                lines.append(f"收款银行：{person['收款银行']}")
+            if person.get('收款卡号'):
+                lines.append(f"收款卡号：{person['收款卡号']}")
+            if person.get('收款银行预留手机号'):
+                lines.append(f"预留手机：{person['收款银行预留手机号']}")
+            if person.get('合同'):
+                lines.append(f"合同文件：{person['合同']}")
+
         return "\n".join(lines)
     
-    def search(self, keyword: str) -> str:
+    def search(self, keyword: str, is_hr: bool = False) -> str:
         """通用搜索"""
         keyword = keyword.strip().lower()
         if not keyword:
             return "请输入搜索关键词"
-        
+
         # 先尝试精确匹配姓名
         person = self.query_by_name(keyword)
         if person:
-            return self.format_person_info(person)
-        
+            return self.format_person_info(person, is_hr=is_hr)
+
         # 尝试职位匹配
         by_position = self.query_by_position(keyword)
         if by_position:
             results = [f"找到 {len(by_position)} 个'{keyword}'相关职位的人员："]
-            for p in by_position[:10]:  # 最多显示10个
+            for p in by_position[:10]:
                 name = p.get('姓名', 'N/A')
                 pos = p.get('合同职务', 'N/A')
                 status = p.get('工作状态', '')
@@ -165,7 +191,7 @@ class RosterManager:
             if len(by_position) > 10:
                 results.append(f"...还有 {len(by_position) - 10} 人")
             return "\n".join(results)
-        
+
         # 尝试工作类型匹配
         by_type = self.query_by_work_type(keyword)
         if by_type:
@@ -176,7 +202,7 @@ class RosterManager:
                 status = p.get('工作状态', '')
                 results.append(f"- {name} | {pos} | {status}")
             return "\n".join(results)
-        
+
         return f"未找到与'{keyword}'相关的人员信息"
 
 # 初始化名册管理器
@@ -188,12 +214,12 @@ def init_roster(roster_file: str = "roster.json"):
     roster_manager = RosterManager(roster_file)
     return roster_manager
 
-def query_member(keyword: str) -> str:
+def query_member(keyword: str, is_hr: bool = False) -> str:
     """查询成员信息"""
     global roster_manager
     if roster_manager is None:
         init_roster()
-    return roster_manager.search(keyword)
+    return roster_manager.search(keyword, is_hr=is_hr)
 
 def get_roster_stats() -> str:
     """获取名册统计"""

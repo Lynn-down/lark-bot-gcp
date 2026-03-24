@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # 配置
 DEFAULT_HR_EMAIL = "jyx@group-ultra.com"
 HR_USERS = ["蒋雨萱", "丁怡菲", "刘怡馨", "triplet", "戴祥和", "陈春宇"]
-HR_USER_IDS = ["946d1fc5", "triplet"]
+HR_USER_IDS = ["946d1fc5", "triplet"]  # 946d1fc5 = 陈春宇（CEO）
 
 # 飞书配置
 ENCRYPT_KEY = os.environ.get("LARK_ENCRYPT_KEY", "")
@@ -237,15 +237,21 @@ def process_message(user_message: str, user_id: str, sender_name: str) -> str:
     if any(kw in user_message for kw in ["入职", "新员工", "报到"]):
         return get_onboarding_info(is_hr)
     
-    # 薪资/合同等敏感信息：直接告知需联系HR
-    if any(kw in user_message for kw in ["薪资", "工资", "底薪", "绩效", "涨薪", "薪酬"]):
-        return "薪资属于保密信息，我这里没有这个数据哦～ 具体请直接联系HR确认 🙏"
-
-    # 名册查询（直接处理，不经过LLM）
-    if any(kw in user_message for kw in ["是谁", "的资料", "的信息", "职位", "岗位", "部门", "联系方式", "邮箱", "电话"]):
+    # 薪资/合同等敏感信息：HR 可查，非HR 告知联系HR
+    if any(kw in user_message for kw in ["薪资", "工资", "底薪", "绩效", "涨薪", "薪酬", "到手", "用人成本"]):
+        if not is_hr:
+            return "薪资属于保密信息，我这里没有这个数据哦～ 具体请直接联系HR确认 🙏"
+        # HR 可以查
         names = re.findall(r'[\u4e00-\u9fa5]{2,4}', user_message)
         if names:
-            return query_member(names[0])
+            return query_member(names[0], is_hr=True)
+        return "请告诉我要查哪位同学的薪资信息～"
+
+    # 名册查询（直接处理，不经过LLM）
+    if any(kw in user_message for kw in ["是谁", "的资料", "的信息", "职位", "岗位", "部门", "联系方式", "邮箱", "电话", "身份证", "银行卡", "合同"]):
+        names = re.findall(r'[\u4e00-\u9fa5]{2,4}', user_message)
+        if names:
+            return query_member(names[0], is_hr=is_hr)
     
     if any(kw in user_message for kw in ["多少", "几个", "人数", "统计"]):
         return get_roster_stats()
