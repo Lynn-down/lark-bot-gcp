@@ -5,7 +5,7 @@ Lark HR 小机器人 - v5.0 增强版
 - Function Calling
 - 人格化回复
 """
-APP_VERSION = "v5.0-claude-sonnet"
+APP_VERSION = "v5.1-claude-sonnet"
 
 import os
 import re
@@ -89,6 +89,49 @@ def _open_api_headers() -> Dict[str, str]:
         "Content-Type": "application/json"
     }
 
+
+
+def get_onboarding_info(is_hr: bool) -> str:
+    """获取入职信息，区分HR和普通用户"""
+    if is_hr:
+        return """【HR入职管理指南】📋
+
+**入职前准备：**
+1. 确认新员工offer信息
+2. 准备劳动合同/劳务合同
+3. 开通飞书账号和邮箱
+4. 安排工位和电脑设备
+5. 准备入职资料包
+
+**入职当天流程：**
+1. 上午10点到公司接待
+2. 签署劳动合同
+3. 配置VPN和开发环境
+4. 介绍团队成员
+5. 分配第一个任务
+
+**注意事项：**
+- 实习生需签劳务合同
+- 全职员工需办理五险一金"""
+    else:
+        return """【新员工入职指南】🎉
+
+**入职前准备：**
+请携带：身份证、学历证明、离职证明、一寸照片2张、银行卡
+
+**入职当天：**
+📍 地点：东升大厦A座4楼
+⏰ 时间：上午10点
+👤 联系人：陆俊豪（HR）
+
+**当天流程：**
+1. 到前台联系陆俊豪接待
+2. 签署劳动合同
+3. 配置飞书账号
+4. 领取入职礼包
+5. 熟悉办公环境
+
+有问题随时问HR小伙伴！😊"""
 
 def is_hr_user(sender_name, sender_id=""):
     """判断用户是否是HR"""
@@ -243,6 +286,11 @@ def process_message(user_message: str, user_id: str, sender_name: str = "") -> s
     if user_message.lower() in ["/clear", "清空", "忘记"]:
         llm_client_v2.conversation_manager.clear_history(user_id)
         return "好的，之前的对话我都忘啦🙃 有什么新问题吗？"
+    
+    # 入职查询（区分HR和普通用户）
+    onboarding_keywords = ["入职", "新员工", "报到", "入职流程", "入职准备"]
+    if any(kw in user_message for kw in onboarding_keywords):
+        return get_onboarding_info(is_hr_user(sender_name, user_id))
     
     # 合同生成
     contract_keywords = ["合同", "生成合同", "劳动合同", "劳务合同"]
