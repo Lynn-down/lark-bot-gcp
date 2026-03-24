@@ -115,16 +115,6 @@ class LLMClientV2:
             
             if "error" in response:
                 logger.error(f"LLM API error: {response['error']}")
-                # API失败时，尝试直接执行工具查询
-                if "查" in user_message or "是谁" in user_message or "多少" in user_message:
-                    # 尝试直接调用query_member
-                    if available_functions and "query_member" in available_functions:
-                        # 提取可能的姓名（简单提取2-4个汉字）
-                        import re
-                        names = re.findall(r'[一-龥]{2,4}', user_message)
-                        if names:
-                            result = available_functions["query_member"](keyword=names[0])
-                            return result
                 return "我现在有点忙，请稍后再试～"
             
             message = response["choices"][0]["message"]

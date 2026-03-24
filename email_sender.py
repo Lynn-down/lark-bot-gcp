@@ -44,9 +44,12 @@ def send_contract_email(to_email, contract_path, employee_name, contract_type):
                 attachment = MIMEBase('application', 'vnd.openxmlformats-officedocument.wordprocessingml.document')
                 attachment.set_payload(f.read())
             encoders.encode_base64(attachment)
-            # 附件名统一格式：姓名-合同类型.docx
+            # 使用 RFC 2231 编码支持中文附件名
             filename = f"{employee_name}-{contract_type}.docx"
-            attachment.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+            attachment.add_header(
+                'Content-Disposition', 'attachment',
+                filename=('utf-8', '', filename)
+            )
             msg.attach(attachment)
         else:
             return {'success': False, 'message': '合同文件不存在'}

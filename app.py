@@ -1,8 +1,7 @@
 """
-Lark HR 小机器人 - v5.3
-使用飞书SDK正确解析事件 + 新版合同生成（真实DOCX模板）
+Lark HR 小机器人 - v5.4
 """
-APP_VERSION = "v5.3-real-docx-contract"
+APP_VERSION = "v5.4-claude-opus"
 
 import os
 import re
@@ -14,12 +13,16 @@ from typing import Dict, List, Optional, Any
 from flask import Flask, request
 from datetime import datetime
 
+# ⚠️ load_dotenv 必须在所有业务模块 import 之前，否则 API key 读不到
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
 import requests
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import *
 from lark_oapi.adapter.flask import parse_req, parse_resp
 
-# 导入功能模块
+# 导入功能模块（load_dotenv 已执行，环境变量已就绪）
 from contract_generator import (
     generate_contract,
     detect_contract_type,
@@ -29,9 +32,6 @@ from contract_generator import (
 from roster_module import query_member, get_roster_stats, query_roster_detail, init_roster
 from email_sender import send_contract_email
 from llm_client_v2 import llm_client_v2
-
-from dotenv import load_dotenv
-load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
