@@ -203,7 +203,52 @@ def _convert_table_to_blocks(text: str) -> str:
     return '\n'.join(result)
 
 
-def reply_text(chat_id: str, text: str) -> bool:
+def send_file_to_chat(chat_id: str, file_path: str, file_name: str) -> bool:
+    """上传文件到飞书并发送到群聊"""
+    try:
+        token = get_access_token()
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. 上传文件，拿 file_key
+        with open(file_path, "rb") as f:
+            upload_resp = requests.post(
+                f"{OPEN_API_BASE}/im/v1/files",
+                headers=headers,
+                data={"file_type": "stream", "file_name": file_name},
+                files={"file": (file_name, f, "application/octet-stream")},
+                timeout=30,
+            )
+        upload_data = upload_resp.json()
+        logger.info(f"File upload response: {upload_data}")
+        if upload_data.get("code") != 0:
+            logger.error(f"File upload failed: {upload_data}")
+            return False
+
+        file_key = upload_data["data"]["file_key"]
+
+        # 2. 发送文件消息到群
+        send_resp = requests.post(
+            f"{OPEN_API_BASE}/im/v1/messages?receive_id_type=chat_id",
+            headers={**headers, "Content-Type": "application/json"},
+            json={
+                "receive_id": chat_id,
+                "msg_type": "file",
+                "content": json.dumps({"file_key": file_key}),
+            },
+            timeout=15,
+        )
+        if send_resp.status_code == 200 and send_resp.json().get("code") == 0:
+            logger.info(f"File '{file_name}' sent to {chat_id}")
+            return True
+        else:
+            logger.error(f"File send failed: {send_resp.status_code} {send_resp.text[:200]}")
+            return False
+    except Exception as e:
+        logger.error(f"send_file_to_chat error: {e}")
+        return False
+
+
+
     """发送卡片消息（lark_md，支持 Markdown 表格/加粗/分割线）"""
     try:
         headers = {
@@ -474,10 +519,10 @@ def handle_contract(user_message: str, user_id: str = "",
     for k, label in field_labels.items():
         if fields.get(k) and str(fields[k]).strip() not in ("", "XXX"):
             summary_lines.append(f"  {label}：{fields[k]}")
-    summary_lines.append(f"\n正在生成合同文档，稍后发送至 {DEFAULT_HR_EMAIL} ✉️")
+    summary_lines.append(f"\n正在生成合同文档，稍后直接发到此对话 ⬆️")
     summary_text = "\n".join(summary_lines)
 
-    # 后台生成 + 发邮件 + 引用回复确认
+    # 后台生成 + 发文件到飞书（失败时 fallback 邮件）
     def _background():
         try:
             fields.setdefault("sign_date", datetime.now().strftime("%Y-%m-%d"))
@@ -490,14 +535,25 @@ def handle_contract(user_message: str, user_id: str = "",
                 fields.setdefault("duration_unit", "月")
 
             path = generate_contract(contract_type, fields, output_name=name)
-            send_contract_email(DEFAULT_HR_EMAIL, path, name, cn_name)
-            logger.info(f"Contract sent: {path}")
+            file_name = f"{name}-{cn_name}.docx"
 
-            # 引用回复确认（回复用户原消息）
+            # 优先发到飞书聊天
+            if chat_id:
+                ok = send_file_to_chat(chat_id, path, file_name)
+                if ok:
+                    logger.info(f"Contract file sent to Lark chat: {path}")
+                    return
+                else:
+                    logger.warning("Lark file send failed, falling back to email")
+
+            # fallback：邮件
+            send_contract_email(DEFAULT_HR_EMAIL, path, name, cn_name)
+            logger.info(f"Contract sent by email: {path}")
+            notify = f"✅ {name}的{cn_name}已生成（飞书发送失败，已发至 {DEFAULT_HR_EMAIL}）"
             if msg_id:
-                reply_to_message(msg_id, f"✅ {name}的{cn_name}已生成并发送至 {DEFAULT_HR_EMAIL}")
+                reply_to_message(msg_id, notify)
             elif chat_id:
-                reply_text(chat_id, f"✅ {name}的{cn_name}已生成并发送至 {DEFAULT_HR_EMAIL}")
+                reply_text(chat_id, notify)
         except Exception as e:
             logger.error(f"Contract generation/send error: {e}", exc_info=True)
             if chat_id:
