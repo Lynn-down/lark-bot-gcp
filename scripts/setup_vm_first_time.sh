@@ -27,4 +27,4 @@ echo "请编辑 .env 填入飞书应用凭证: nano .env"
 # PORT=80 python app.py   # 若用 80 端口需 sudo 或 capability
 
 # 后台运行（可选）
-# nohup . .venv/bin/activate && python app.py >> app.log 2>&1 &
+# nohup .venv/bin/python app.py >> app.log 2>&1 &

@@ -1,8 +1,8 @@
 """
-Lark HR 小机器人 - v5.2 修复版
-使用飞书SDK正确解析事件
+Lark HR 小机器人 - v5.3
+使用飞书SDK正确解析事件 + 新版合同生成（真实DOCX模板）
 """
-APP_VERSION = "v5.2-claude-sonnet"
+APP_VERSION = "v5.3-real-docx-contract"
 
 import os
 import re
@@ -20,7 +20,12 @@ from lark_oapi.api.im.v1 import *
 from lark_oapi.adapter.flask import parse_req, parse_resp
 
 # 导入功能模块
-from contract_v2 import smart_extract_info, generate_labor_contract_v2
+from contract_generator import (
+    generate_contract,
+    detect_contract_type,
+    extract_fields_via_llm,
+    CONTRACT_TYPE_NAMES,
+)
 from roster_module import query_member, get_roster_stats, init_roster
 from email_sender import send_contract_email
 from llm_client_v2 import llm_client_v2
@@ -197,7 +202,7 @@ def process_message(user_message: str, user_id: str, sender_name: str) -> str:
     is_hr = is_hr_user(sender_name, user_id)
     
     # 合同生成（仅HR）
-    if any(kw in user_message for kw in ["合同", "劳动合同", "劳务合同"]):
+    if any(kw in user_message for kw in ["合同", "劳动合同", "劳务合同", "实习合同"]):
         if not is_hr:
             return "合同生成功能仅限HR使用哦～"
         return handle_contract(user_message)
@@ -230,26 +235,59 @@ def process_message(user_message: str, user_id: str, sender_name: str) -> str:
 
 
 def handle_contract(user_message: str) -> str:
-    """处理合同生成"""
-    data = smart_extract_info(user_message)
-    required = ["员工姓名", "岗位名称", "税前工资"]
-    missing = [f for f in required if not data.get(f) or data.get(f) == "XXX"]
-    
+    """
+    处理合同生成请求。
+    1. 识别合同类型（劳动/劳务/实习）
+    2. 用 LLM 提取字段（支持自然语言描述）
+    3. 校验必填字段，缺失时提示补充
+    4. 后台生成 DOCX 并发送邮件
+    """
+    # ── 识别合同类型 ──
+    contract_type = detect_contract_type(user_message)
+    cn_name = CONTRACT_TYPE_NAMES[contract_type]
+
+    # ── LLM 提取字段 ──
+    try:
+        _, fields = extract_fields_via_llm(user_message, llm_client_v2)
+    except Exception as e:
+        logger.error(f"Field extraction failed: {e}")
+        fields = {}
+
+    # ── 必填字段校验 ──
+    required = {"name": "姓名", "job_title": "岗位名称", "salary": "薪资"}
+    missing = [cn for k, cn in required.items()
+               if not fields.get(k) or fields[k] in ("", "XXX")]
     if missing:
-        return f"请补充以下信息：{', '.join(missing)}"
-    
-    name = data["员工姓名"]
-    
-    import threading
-    def send():
+        return (f"收到你要生成「{cn_name}」的需求 ✅\n"
+                f"还缺少以下信息，补充后我马上生成：\n"
+                + "\n".join(f"  • {m}" for m in missing))
+
+    name = fields["name"]
+
+    # ── 后台生成 + 发送邮件 ──
+    def _background():
         try:
-            path = generate_labor_contract_v2(data)
-            send_contract_email(DEFAULT_HR_EMAIL, path, name, "劳动合同")
+            # 默认填补常用字段
+            fields.setdefault("sign_date",
+                              datetime.now().strftime("%Y-%m-%d"))
+            fields.setdefault("work_location", "北京市")
+            if contract_type == "labor":
+                fields.setdefault("duration", "3")
+                fields.setdefault("duration_unit", "年")
+                fields.setdefault("probation_period", "3")
+            else:
+                fields.setdefault("duration_unit", "月")
+
+            path = generate_contract(contract_type, fields, output_name=name)
+            send_contract_email(DEFAULT_HR_EMAIL, path, name, cn_name)
+            logger.info(f"Contract sent: {path}")
         except Exception as e:
-            logger.error(f"Contract error: {e}")
-    
-    threading.Thread(target=send).start()
-    return f"收到！{name}的劳动合同正在制作中，稍后发送到 {DEFAULT_HR_EMAIL}"
+            logger.error(f"Contract generation/send error: {e}", exc_info=True)
+
+    threading.Thread(target=_background, daemon=True).start()
+    return (f"收到！正在为「{name}」生成{cn_name} 📄\n"
+            f"使用真实模板，格式与纸质版完全一致。\n"
+            f"稍后发送至 {DEFAULT_HR_EMAIL} ✉️")
 
 
 # ============ 飞书事件处理 ============

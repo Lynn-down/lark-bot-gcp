@@ -1,26 +1,48 @@
-# Python
+# ── Python ────────────────────────────────────────
 __pycache__/
 *.py[cod]
-*.class
+*.pyo
+*.pyd
 *.so
 .Python
 .venv/
 venv/
 ENV/
 
-# Logs
-*.log
-app.log
+# ── 环境变量（含真实密钥，绝对不提交）───────────────
+.env
+.env.*
+!.env.example        # 仅保留示例模板
 
-# IDE
+# ── 日志 ──────────────────────────────────────────
+*.log
+/tmp/
+
+# ── IDE / 编辑器 ──────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
+.cursor/
 
-# OS
+# ── OS ────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# Backup
+# ── 历史备份文件（不应入库） ────────────────────────
+*.old
 *.bak
+*.backup
+app_broken.py
+app_debug.py
+app_v4.py
+app.py.old
+contract_docx_generator.py
+contract_template_new.py
+contract_v2.py
+smart_contract_extractor.py
+
+# ── 合同产出（/tmp 已忽略，本地桌面生成的也不入库）──
+*-劳动合同.docx
+*-劳务合同.docx
+*-实习合同.docx

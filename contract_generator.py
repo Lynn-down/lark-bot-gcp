@@ -1,251 +1,454 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-合同生成器 - 根据模板和用户信息生成合同
-"""
+contract_generator.py  ——  合同生成模块 v2.0
+北京极群科技有限公司
 
-# 劳动合同模板（带XX占位符）
-LABOR_CONTRACT_TEMPLATE = """劳动合同（通用）
-
-甲    方：北京极群科技有限公司
-乙    方：XX员工姓名XX
-签订日期：  XX签订年份XX  年  XX签订月份XX  月  XX签订日期XX  日
-
-劳动合同
-
-本劳动合同（下称"本合同"）由以下双方于  XX签订年份XX  年  XX签订月份XX 月  XX签订日期XX  日签订：
-
-甲方：
-注册地址：北京市海淀区中关村东路8号东升大厦AB座四层4161号
-法定代表人：陈春宇
-
-乙方：
-身份证号码：XX身份证号XX
-户籍地址：XX户籍地址XX
-联系地址：XX联系地址XX
-联系电话：XX手机号XX
-
-鉴于：
-甲方已如实告知并经乙方确认其工作内容、工作条件、工作地点、职业危害、安全生产状况、劳动报酬以及乙方要求了解的其他情况；
-根据《中华人民共和国劳动法》《中华人民共和国劳动合同法》等法律法规政策规定,甲乙双方遵循合法、公平、平等自愿、协商一致、诚实信用的原则订立本合同，共同遵守所列条款。
-
-合同期限
-1.  本合同为（任选一种）：
-（1）□无固定期限合同；
-（2）☑有固定期限，合同期限  XX合同年限XX  年，自  XX签订年份XX  年 XX签订月份XX 月 XX签订日期XX  日起至  XX结束年份XX  年 XX结束月份XX 月 XX结束日期XX  日止，试用期为 XX试用期月数XX 个月；
-（3）□以完成一定工作任务为期限。
-
-2.  本合同到期后，甲方未提出续签或乙方不同意续签的，本合同到期终止。
-
-工作内容、工作地点
-1.  乙方工作地点为     XX工作地点XX      。
-
-2.  签订合同时，乙方工作岗位为  XX岗位名称XX   ，基本岗位职责详见附件1：基本岗位职责描述。
-
-3.  乙方应当接受甲方对其进行的工作岗位所必需的培训。
-
-4.  乙方必须按照甲方确定的岗位职责，按时、按质、按量完成工作。
-
-工作时间和休息休假
-1.  甲方安排乙方执行标准工时工作制。每日工作时间8小时，每周工作时间40小时，每周至少休息一日。
-
-2.  甲方安排乙方加班的，应依法优先安排补休，无法安排补休的依法支付加班工资。
-
-3.  乙方依法享有国家规定的各种法定节假日和甲方的休假待遇。
-
-四、劳动报酬
-1.  甲方依法制定工资分配制度，并告知乙方。甲方至少每月以货币形式向乙方支付一次工资。甲方经与乙方协商，约定按照如下方式向乙方以货币形式发放工资，于每月15日前足额支付：
-固定工资 XX税前工资XX 元/月（税前）。
-
-2.  试用期内，乙方的工资为转正后的  100  %。
-
-3.  双方按照国家和地方规定缴纳社会保险和住房公积金。
-
-五、劳动纪律
-1.  乙方应遵守国家的法律法规。
-
-2.  乙方已知悉并详细阅读甲方的各项规章制度，并承诺严格遵守。
-
-3.  [其他劳动纪律条款保持不变]
-
-附件1：基本岗位职责描述
-XX岗位职责描述XX
+支持三种合同类型，基于真实 DOCX 模板精确填充，格式原样保留。
+对外接口：
+  generate_contract(contract_type, fields, output_name=None) -> str  生成文件路径
+  extract_fields_via_llm(user_message, llm_client) -> (str, dict)   LLM提取字段
+  detect_contract_type(text) -> str                                  识别合同类型
 """
 
-# 劳务合同模板
-SERVICE_CONTRACT_TEMPLATE = """劳务合同
+import os
+import re
+import json
+import logging
+from copy import deepcopy
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
+from docx import Document
+from docx.oxml.ns import qn
 
-本劳务合同（下称"本合同"）由以下双方于  XX签订年份XX  年  XX签订月份XX  月  XX签订日期XX  日签订：
+logger = logging.getLogger(__name__)
 
-甲方：
-注册地址：北京市海淀区中关村东路8号东升大厦AB座四层4161号
-法定代表人：陈春宇
+# ─── 路径配置 ──────────────────────────────────────────────────────────────────
+_HERE = os.path.dirname(os.path.abspath(__file__))
+TEMPLATES_DIR = os.environ.get("CONTRACT_TEMPLATES_DIR",
+                               os.path.join(_HERE, "templates"))
+OUTPUT_DIR    = os.environ.get("CONTRACT_OUTPUT_DIR", "/tmp")
 
-乙方：
-身份证号码：XX身份证号XX
-户籍地址：XX户籍地址XX
-联系地址：XX联系地址XX
-联系电话：XX手机号XX
+TEMPLATES = {
+    "labor":   os.path.join(TEMPLATES_DIR, "中国大陆-劳动合同-空模板.docx"),
+    "service": os.path.join(TEMPLATES_DIR, "中国大陆-劳务合同-模板-20260109draft.docx"),
+    "intern":  os.path.join(TEMPLATES_DIR, "中国大陆-实习合同-模板.docx"),
+}
 
-鉴于：
-甲方已如实告知并经乙方确认其工作内容、工作条件、工作地点、职业危害、安全生产状况、劳务报酬以及乙方要求了解的其他情况，乙方自愿与甲方建立劳务关系提供相关服务；
-根据《中华人民共和国民法典》等法律法规政策规定,甲乙双方遵循合法、公平、平等自愿、协商一致、诚实信用的原则订立本合同，共同遵守所列条款。
-
-合同期限
-本合同期限  XX合同月数XX  月，自  XX签订年份XX  年  XX签订月份XX  月  XX签订日期XX  日起至  XX结束年份XX  年  XX结束月份XX  月  XX结束日期XX  日止。
-
-工作内容、工作地点
-乙方工作地点为     XX工作地点XX      。
-
-乙方的岗位为  XX岗位名称XX  ，甲方对乙方提出的基本岗位职责和要求详见附件1：基本岗位职责和要求描述。
-
-乙方应当接受甲方对其进行的工作岗位所必需的培训。
-
-乙方必须按照甲方确定的岗位职责，按时、按质、按量完成工作。
-
-劳务报酬
-甲方将按照如下方式向乙方发放劳务报酬：
-固定报酬  XX税前工资XX  元/月（税前）。
-
-乙方应自行缴纳各项社会保险和公积金，并自行购买医疗险、意外伤害保险等。
-
-附件1：基本岗位职责和要求描述
-XX岗位职责描述XX
-"""
-
-# 实习合同模板
-INTERNSHIP_CONTRACT_TEMPLATE = """实习合同
-
-本实习合同（下称"本合同"）由以下双方于  XX签订年份XX  年  XX签订月份XX  月  XX签订日期XX  日签订：
-
-甲方：
-注册地址：北京市海淀区中关村东路8号东升大厦AB座四层4161号
-法定代表人：陈春宇
-
-乙方：
-身份证号码：XX身份证号XX
-户籍地址：XX户籍地址XX
-联系地址：XX联系地址XX
-联系电话：XX手机号XX
-
-鉴于：
-乙方自愿与甲方建立实习关系；
-根据《中华人民共和国民法典》等法律法规政策规定,甲乙双方遵循合法、公平、平等自愿、协商一致、诚实信用的原则订立本合同。
-
-合同期限
-本合同期限  XX合同月数XX  月，自  XX签订年份XX  年  XX签订月份XX  月  XX签订日期XX  日起至  XX结束年份XX  年  XX结束月份XX  月  XX结束日期XX  日止。
-
-工作内容、工作地点
-乙方工作地点为     XX工作地点XX      。
-
-乙方的岗位为  XX岗位名称XX  ，甲方对乙方提出的基本岗位职责和要求详见附件1：基本岗位职责和要求描述。
-
-实习报酬
-甲方将按照如下方式向乙方发放实习报酬：
-XX报酬方式XX
-
-乙方应自行缴纳各项社会保险和公积金。
-
-附件1：基本岗位职责和要求描述
-XX岗位职责描述XX
-"""
+CONTRACT_TYPE_NAMES = {
+    "labor":   "劳动合同",
+    "service": "劳务合同",
+    "intern":  "实习合同",
+}
 
 
-def generate_contract(contract_type: str, data: dict) -> str:
-    """
-    根据合同类型和数据生成合同
-    
-    contract_type: "劳动" | "劳务" | "实习"
-    data: {
-        "员工姓名": "张三",
-        "身份证号": "1234567890",
-        "户籍地址": "北京市...",
-        "联系地址": "北京市...",
-        "手机号": "13800138000",
-        "岗位名称": "产品经理",
-        "税前工资": "15000",
-        "合同年限": "3",
-        "试用期月数": "3",
-        "工作地点": "北京市",
-        "签订日期": "2026-01-20",
-        "岗位职责描述": "负责产品设计..."
-    }
-    """
-    from datetime import datetime, timedelta
-    
-    # 解析签订日期
-    sign_date = data.get("签订日期", datetime.now().strftime("%Y-%m-%d"))
-    sign_year, sign_month, sign_day = sign_date.split("-")
-    
-    # 计算结束日期
-    contract_years = int(data.get("合同年限", "3"))
-    contract_months = int(data.get("合同月数", "3"))
-    
-    if contract_type == "劳动":
-        end_date = datetime(int(sign_year), int(sign_month), int(sign_day)) + timedelta(days=365*contract_years)
+# ─── 通用工具 ──────────────────────────────────────────────────────────────────
+
+def parse_date(date_str):
+    if not date_str:
+        return None
+    s = str(date_str).strip()
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            pass
+    m = re.match(r'(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日', s)
+    if m:
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    return None
+
+
+def calc_end_date(start, duration, unit):
+    if not start or not duration:
+        return None
+    try:
+        n = int(str(duration))
+    except ValueError:
+        return None
+    return start + relativedelta(years=n if unit == '年' else 0,
+                                  months=0 if unit == '年' else n)
+
+
+def fmt_y(d): return str(d.year)
+def fmt_m(d): return f'{d.month:02d}'
+def fmt_d(d): return f'{d.day:02d}'
+
+
+def _replace_run_at(para, idx, text):
+    if 0 <= idx < len(para.runs):
+        para.runs[idx].text = text
+        return True
+    return False
+
+
+def _set_para_text(para, new_text):
+    """将段落内所有 run 合并到第一个 run，保留字符格式。"""
+    runs = para.runs
+    if runs:
+        runs[0].text = new_text
+        for r in runs[1:]:
+            r.text = ''
     else:
-        end_date = datetime(int(sign_year), int(sign_month), int(sign_day)) + timedelta(days=30*contract_months)
-    
-    end_year = str(end_date.year)
-    end_month = str(end_date.month).zfill(2)
-    end_day = str(end_date.day).zfill(2)
-    
-    # 选择模板
-    if contract_type == "劳动":
-        template = LABOR_CONTRACT_TEMPLATE
-    elif contract_type == "劳务":
-        template = SERVICE_CONTRACT_TEMPLATE
-    else:  # 实习
-        template = INTERNSHIP_CONTRACT_TEMPLATE
-    
-    # 替换所有占位符
-    contract = template
-    replacements = {
-        "XX员工姓名XX": data.get("员工姓名", ""),
-        "XX身份证号XX": data.get("身份证号", ""),
-        "XX户籍地址XX": data.get("户籍地址", ""),
-        "XX联系地址XX": data.get("联系地址", ""),
-        "XX手机号XX": data.get("手机号", ""),
-        "XX岗位名称XX": data.get("岗位名称", ""),
-        "XX税前工资XX": data.get("税前工资", ""),
-        "XX合同年限XX": data.get("合同年限", "3"),
-        "XX合同月数XX": data.get("合同月数", "3"),
-        "XX试用期月数XX": data.get("试用期月数", "3"),
-        "XX工作地点XX": data.get("工作地点", "北京市"),
-        "XX签订年份XX": sign_year,
-        "XX签订月份XX": sign_month,
-        "XX签订日期XX": sign_day,
-        "XX结束年份XX": end_year,
-        "XX结束月份XX": end_month,
-        "XX结束日期XX": end_day,
-        "XX岗位职责描述XX": data.get("岗位职责描述", "详见岗位说明书"),
-        "XX报酬方式XX": data.get("报酬方式", "200元/天")
-    }
-    
-    for placeholder, value in replacements.items():
-        contract = contract.replace(placeholder, value)
-    
-    return contract
+        para.add_run(new_text)
 
 
-# 保存模板到文件
-if __name__ == "__main__":
-    import sys
-    
-    # 测试数据
-    test_data = {
-        "员工姓名": "张三",
-        "身份证号": "110101199001011234",
-        "户籍地址": "北京市海淀区xxx",
-        "联系地址": "北京市朝阳区xxx",
-        "手机号": "13800138000",
-        "岗位名称": "产品经理",
-        "税前工资": "20000",
-        "合同年限": "3",
-        "试用期月数": "3",
-        "工作地点": "北京市",
-        "签订日期": "2026-03-25",
-        "岗位职责描述": "1. 负责产品规划和设计\n2. 协调研发团队\n3. 跟进项目进度"
-    }
-    
-    print("=== 劳动合同示例 ===")
-    print(generate_contract("劳动", test_data))
+def _delete_para(para):
+    p = para._p
+    parent = p.getparent()
+    if parent is not None:
+        parent.remove(p)
+
+
+def _clone_pPr(src_para, dst_para):
+    src_pPr = src_para._p.find(qn('w:pPr'))
+    if src_pPr is None:
+        return
+    dst_pPr = dst_para._p.find(qn('w:pPr'))
+    if dst_pPr is not None:
+        dst_para._p.remove(dst_pPr)
+    dst_para._p.insert(0, deepcopy(src_pPr))
+
+
+def _clone_rPr(src_run, dst_run):
+    src_rPr = src_run._r.find(qn('w:rPr'))
+    if src_rPr is None:
+        return
+    dst_rPr = dst_run._r.find(qn('w:rPr'))
+    if dst_rPr is not None:
+        dst_run._r.remove(dst_rPr)
+    dst_run._r.insert(0, deepcopy(src_rPr))
+
+
+def _parse_responsibilities(resp_input):
+    """
+    解析岗位职责，返回 [{"text": str, "bold": bool}, ...]
+    支持 str、list[str]、list[dict]
+    """
+    if not resp_input:
+        return []
+    items = []
+    if isinstance(resp_input, str):
+        lines = resp_input.split('\n')
+    elif isinstance(resp_input, list):
+        lines = []
+        for item in resp_input:
+            if isinstance(item, dict):
+                items.append(item)
+            else:
+                lines.append(str(item))
+    else:
+        lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        first = stripped[0]
+        is_bold = not (first in '（(- \t' or first.isdigit())
+        items.append({"text": stripped, "bold": is_bold})
+    return items
+
+
+# ─── 劳动合同 ──────────────────────────────────────────────────────────────────
+
+def _fill_labor(doc, fields):
+    paras = doc.paragraphs
+    sign_date  = parse_date(fields.get('sign_date'))
+    start_date = parse_date(fields.get('start_date'))
+    end_date   = parse_date(fields.get('end_date'))
+    duration   = str(fields.get('duration', ''))
+    dur_unit   = fields.get('duration_unit', '年')
+    if not end_date and start_date and duration:
+        end_date = calc_end_date(start_date, duration, dur_unit)
+    probation  = str(fields.get('probation_period', '3'))
+    name       = str(fields.get('name', ''))
+    id_num     = str(fields.get('id_number', ''))
+    contact    = str(fields.get('contact_address', ''))
+    household  = str(fields.get('household_address', ''))
+    phone      = str(fields.get('phone', ''))
+    salary     = str(fields.get('salary', ''))
+    job_title  = str(fields.get('job_title', ''))
+    work_loc   = str(fields.get('work_location', '北京市'))
+
+    if name:       _replace_run_at(paras[8], 3, name)
+    if sign_date:
+        _replace_run_at(paras[9], 2, fmt_y(sign_date))
+        _replace_run_at(paras[9], 6, fmt_m(sign_date))
+        _replace_run_at(paras[9], 10, fmt_d(sign_date))
+        _replace_run_at(paras[11], 6, fmt_y(sign_date))
+        _replace_run_at(paras[11], 10, fmt_m(sign_date))
+        r14 = paras[11].runs[14] if len(paras[11].runs) > 14 else None
+        if r14:
+            r14.text = fmt_d(sign_date) + (' ' if r14.text.endswith(' ') else '')
+    if duration:   _replace_run_at(paras[20], 6, duration)
+    if start_date:
+        _replace_run_at(paras[20], 10, fmt_y(start_date))
+        _replace_run_at(paras[20], 14, fmt_m(start_date))
+        _replace_run_at(paras[20], 18, fmt_d(start_date))
+    if end_date:
+        _replace_run_at(paras[20], 22, fmt_y(end_date))
+        _replace_run_at(paras[20], 26, fmt_m(end_date))
+        _replace_run_at(paras[20], 30, fmt_d(end_date))
+    if probation:  _replace_run_at(paras[20], 34, probation)
+    if work_loc:   _replace_run_at(paras[25], 3, work_loc)
+    if job_title:  _replace_run_at(paras[26], 3, job_title)
+    if salary:     _replace_run_at(paras[40], 6, salary)
+    if job_title:  _replace_run_at(paras[113], 2, job_title)
+
+    # 表格：单行双列，右列 para[0..5]
+    cell = doc.tables[1].rows[0].cells[1]
+    if name:      _set_para_text(cell.paragraphs[0], name)
+    if id_num:    _set_para_text(cell.paragraphs[1], id_num)
+    if household: _set_para_text(cell.paragraphs[3], household)
+    if contact:   _set_para_text(cell.paragraphs[4], contact)
+    if phone:     _set_para_text(cell.paragraphs[5], phone)
+
+    # 附件职责
+    resp_items = _parse_responsibilities(fields.get('job_responsibilities'))
+    if resp_items:
+        ref_n_para = paras[115]
+        ref_n_run  = paras[115].runs[0]
+        ref_b_run  = paras[118].runs[0]
+        for p in list(paras[115:]):
+            _delete_para(p)
+        for item in resp_items:
+            np = doc.add_paragraph()
+            _clone_pPr(ref_n_para, np)
+            nr = np.add_run(item['text'])
+            _clone_rPr(ref_b_run if item['bold'] else ref_n_run, nr)
+            nr.bold = item['bold']
+
+
+# ─── 劳务合同 ──────────────────────────────────────────────────────────────────
+
+def _fill_service(doc, fields):
+    paras = doc.paragraphs
+    sign_date  = parse_date(fields.get('sign_date'))
+    start_date = parse_date(fields.get('start_date'))
+    end_date   = parse_date(fields.get('end_date'))
+    duration   = str(fields.get('duration', ''))
+    dur_unit   = fields.get('duration_unit', '月')
+    if not end_date and start_date and duration:
+        end_date = calc_end_date(start_date, duration, dur_unit)
+    name      = str(fields.get('name', ''))
+    id_num    = str(fields.get('id_number', ''))
+    contact   = str(fields.get('contact_address', ''))
+    household = str(fields.get('household_address', ''))
+    phone     = str(fields.get('phone', ''))
+    salary    = str(fields.get('salary', ''))
+    job_title = str(fields.get('job_title', ''))
+    work_loc  = str(fields.get('work_location', '北京市'))
+
+    if sign_date:
+        _replace_run_at(paras[2], 3, fmt_y(sign_date))
+        _replace_run_at(paras[2], 4,
+                        f'年  {fmt_m(sign_date)}  月  {fmt_d(sign_date)}  日签订：')
+    if duration:   _replace_run_at(paras[9], 1, duration)
+    if start_date:
+        _replace_run_at(paras[9], 3, fmt_y(start_date))
+        _replace_run_at(paras[9], 5, fmt_m(start_date))
+        _replace_run_at(paras[9], 7, fmt_d(start_date))
+    if end_date:
+        _replace_run_at(paras[9],  9, fmt_y(end_date))
+        _replace_run_at(paras[9], 11, fmt_m(end_date))
+        _replace_run_at(paras[9], 13, fmt_d(end_date))
+    if work_loc:   _replace_run_at(paras[12], 2, f'  {work_loc}  ')
+    if job_title:  _replace_run_at(paras[13], 1, f'  {job_title}  ')
+    if salary:
+        _replace_run_at(paras[19], 0, '☑')
+        _replace_run_at(paras[19], 2, f'  {salary}  ')
+
+    cell = doc.tables[1].rows[0].cells[1]
+    if name:      _set_para_text(cell.paragraphs[0], name)
+    if id_num:    _set_para_text(cell.paragraphs[1], id_num)
+    if household: _set_para_text(cell.paragraphs[3], household)
+    if contact:   _set_para_text(cell.paragraphs[4], contact)
+    if phone:     _set_para_text(cell.paragraphs[5], phone)
+
+    if job_title: _replace_run_at(paras[95], 4, f' {job_title}')
+
+    resp_items = _parse_responsibilities(fields.get('job_responsibilities'))
+    if resp_items:
+        ref_n_para = paras[98]
+        ref_n_run  = paras[99].runs[0]
+        ref_b_run  = paras[98].runs[0]
+        for p in list(paras[98:]):
+            _delete_para(p)
+        for item in resp_items:
+            np = doc.add_paragraph()
+            _clone_pPr(ref_n_para, np)
+            nr = np.add_run(item['text'])
+            _clone_rPr(ref_b_run if item['bold'] else ref_n_run, nr)
+            nr.bold = item['bold']
+
+
+# ─── 实习合同 ──────────────────────────────────────────────────────────────────
+
+def _fill_intern(doc, fields):
+    paras = doc.paragraphs
+    sign_date  = parse_date(fields.get('sign_date'))
+    start_date = parse_date(fields.get('start_date'))
+    end_date   = parse_date(fields.get('end_date'))
+    duration   = str(fields.get('duration', ''))
+    dur_unit   = fields.get('duration_unit', '月')
+    if not end_date and start_date and duration:
+        end_date = calc_end_date(start_date, duration, dur_unit)
+    name        = str(fields.get('name', ''))
+    id_num      = str(fields.get('id_number', ''))
+    contact     = str(fields.get('contact_address', ''))
+    household   = str(fields.get('household_address', ''))
+    phone       = str(fields.get('phone', ''))
+    salary      = str(fields.get('salary', ''))
+    salary_type = str(fields.get('salary_type', 'fixed'))
+    job_title   = str(fields.get('job_title', ''))
+    work_loc    = str(fields.get('work_location', '北京市'))
+
+    if sign_date:
+        _replace_run_at(paras[2], 9, fmt_y(sign_date))
+        _replace_run_at(paras[2], 12, f' {fmt_m(sign_date)}')
+        _replace_run_at(paras[2], 14, fmt_d(sign_date))
+    if duration:   _replace_run_at(paras[9], 2, duration)
+    if start_date:
+        _replace_run_at(paras[9], 7,  fmt_y(start_date))
+        _replace_run_at(paras[9], 11, f' {fmt_m(start_date)}')
+        _replace_run_at(paras[9], 15, f' {fmt_d(start_date)}')
+    if end_date:
+        _replace_run_at(paras[9], 19, fmt_y(end_date))
+        _replace_run_at(paras[9], 23, f' {fmt_m(end_date)}')
+        _replace_run_at(paras[9], 27, fmt_d(end_date))
+    if work_loc:
+        _replace_run_at(paras[12], 2, f'  {work_loc}  ')
+        for idx in [3, 4, 5, 6, 7]:
+            _replace_run_at(paras[12], idx, '')
+    if job_title:  _replace_run_at(paras[13], 2, job_title)
+    if salary:
+        if salary_type == 'daily':
+            _replace_run_at(paras[21], 3, salary)
+        else:
+            _replace_run_at(paras[19], 2, f'  {salary}  ')
+
+    cell = doc.tables[1].rows[0].cells[1]
+    if name:      _set_para_text(cell.paragraphs[0], name)
+    if id_num:    _set_para_text(cell.paragraphs[1], id_num)
+    if household: _set_para_text(cell.paragraphs[3], household)
+    if contact:   _set_para_text(cell.paragraphs[4], contact)
+    if phone:     _set_para_text(cell.paragraphs[5], phone)
+
+    if job_title:
+        _replace_run_at(paras[95], 4, f' {job_title}')
+        for idx in [5, 6, 7]:
+            _replace_run_at(paras[95], idx, '')
+
+    resp_items = _parse_responsibilities(fields.get('job_responsibilities'))
+    if resp_items:
+        ref_n_para = paras[97]
+        ref_n_run  = paras[97].runs[0]
+        for p in list(paras[97:]):
+            _delete_para(p)
+        for item in resp_items:
+            np = doc.add_paragraph()
+            _clone_pPr(ref_n_para, np)
+            nr = np.add_run(item['text'])
+            _clone_rPr(ref_n_run, nr)
+            nr.bold = item['bold']
+
+
+# ─── 公开接口 ──────────────────────────────────────────────────────────────────
+
+def generate_contract(contract_type: str, fields: dict,
+                      output_name: str = None) -> str:
+    """
+    生成合同 Word 文档，返回文件路径。
+
+    contract_type : "labor" | "service" | "intern"
+    fields        : 字段字典（见模块文档）
+    output_name   : 文件名前缀（默认取 fields["name"]）
+    """
+    if contract_type not in TEMPLATES:
+        raise ValueError(f"未知合同类型: {contract_type}")
+    tpl = TEMPLATES[contract_type]
+    if not os.path.exists(tpl):
+        raise FileNotFoundError(f"模板不存在: {tpl}\n请确认 templates/ 目录已部署")
+
+    doc = Document(tpl)
+    if contract_type == "labor":
+        _fill_labor(doc, fields)
+    elif contract_type == "service":
+        _fill_service(doc, fields)
+    elif contract_type == "intern":
+        _fill_intern(doc, fields)
+
+    name = output_name or fields.get('name', '未命名')
+    filename = f"{name}-{CONTRACT_TYPE_NAMES[contract_type]}.docx"
+    out_path = os.path.join(OUTPUT_DIR, filename)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    doc.save(out_path)
+    logger.info(f"合同已生成: {out_path}")
+    return out_path
+
+
+def detect_contract_type(text: str) -> str:
+    """从消息文本中识别合同类型，返回 'labor' / 'service' / 'intern'"""
+    if re.search(r'实习合同|实习生合同', text):
+        return 'intern'
+    if re.search(r'劳务合同|劳务', text):
+        return 'service'
+    return 'labor'   # 默认：劳动合同
+
+
+# LLM提取的系统提示词（供 app.py 调用）
+CONTRACT_EXTRACT_SYSTEM_PROMPT = """你是一个合同信息提取助手。
+从用户消息中提取合同相关字段，以 JSON 格式返回。
+只返回纯 JSON，不加解释。
+
+可提取的字段（均为字符串）：
+  name               姓名
+  id_number          身份证号码（18位）
+  contact_address    联系地址（现住址）
+  household_address  户籍地址
+  phone              联系电话
+  sign_date          合同签订日期 YYYY-MM-DD
+  start_date         入职/合同开始日期 YYYY-MM-DD
+  end_date           合同结束日期 YYYY-MM-DD（可选，与 duration 二选一）
+  duration           合同时长数字（如 "3"）
+  duration_unit      时长单位 "年" 或 "月"（劳动合同一般填"年"，实习/劳务填"月"）
+  probation_period   试用期月数（仅劳动合同，如 "3"）
+  salary             薪资数字字符串（如 "20000"）
+  salary_type        "fixed"=月薪 / "daily"=日薪（实习合同）
+  job_title          岗位名称
+  work_location      工作地点（默认"北京市"）
+  job_responsibilities  岗位职责（字符串列表，段落标题加粗，正文条目以（1）等开头）
+
+只包含用户消息中明确提到的字段，未提及的字段不要输出。"""
+
+
+def extract_fields_via_llm(user_message: str, llm_client) -> tuple:
+    """
+    调用 LLM 从用户消息中提取合同字段。
+
+    参数:
+        user_message: 用户消息
+        llm_client  : 有 _call_api(messages) 方法的 LLM 客户端
+
+    返回:
+        (contract_type: str, fields: dict)
+    """
+    contract_type = detect_contract_type(user_message)
+    messages = [
+        {"role": "system", "content": CONTRACT_EXTRACT_SYSTEM_PROMPT},
+        {"role": "user",   "content": user_message}
+    ]
+    try:
+        resp = llm_client._call_api(messages, tools=None, temperature=0)
+        if "error" in resp:
+            logger.error(f"LLM extract error: {resp['error']}")
+            return contract_type, {}
+        content = resp["choices"][0]["message"].get("content", "")
+        # 兼容带 markdown 代码块的输出
+        content = re.sub(r'^```(?:json)?\s*', '', content.strip())
+        content = re.sub(r'\s*```$', '', content)
+        fields = json.loads(content)
+        return contract_type, fields
+    except Exception as e:
+        logger.error(f"extract_fields_via_llm failed: {e}")
+        return contract_type, {}
