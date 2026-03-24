@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # 配置
 DEFAULT_HR_EMAIL = "jyx@group-ultra.com"
 HR_USERS = ["蒋雨萱", "丁怡菲", "刘怡馨", "triplet", "戴祥和", "陈春宇"]
-HR_USER_IDS = ["946d1fc5", "triplet"]  # 946d1fc5 = 陈春宇（CEO）
+HR_USER_IDS = ["946d1fc5", "9ddfdb23", "triplet"]  # 946d1fc5=陈春宇(CEO) 9ddfdb23=丁怡菲
 
 # 待处理合同状态（多轮追问）user_id → {contract_type, fields, chat_id, msg_id}
 _pending_contracts: Dict[str, Dict] = {}
@@ -603,11 +603,17 @@ def handle_message_read_event(data) -> None:
     pass
 
 
+def handle_message_updated_event(data) -> None:
+    """忽略消息编辑事件"""
+    pass
+
+
 # 飞书事件处理器
 handler = lark.EventDispatcherHandler.builder(ENCRYPT_KEY, VERIFICATION_TOKEN, lark.LogLevel.INFO) \
     .register_p2_im_message_receive_v1(handle_im_message) \
     .register_p2_im_message_reaction_created_v1(handle_reaction_event) \
     .register_p2_im_message_message_read_v1(handle_message_read_event) \
+    .register_p2_im_message_updated_v1(handle_message_updated_event) \
     .build()
 
 
