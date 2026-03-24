@@ -153,6 +153,13 @@ class RosterManager:
         if person.get('学历'):
             lines.append(f"学历：{person['学历']}")
 
+        # 联系信息（HR 可见）
+        if is_hr:
+            if person.get('手机号'):
+                lines.append(f"手机：{person['手机号']}")
+            if person.get('邮箱'):
+                lines.append(f"邮箱：{person['邮箱']}")
+
         if is_hr:
             lines.append("")
             lines.append("── HR专属信息 ──")

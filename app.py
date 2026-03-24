@@ -387,7 +387,8 @@ def process_message(user_message: str, user_id: str, sender_name: str,
         return "请告诉我要查哪位同学的薪资信息～"
 
     # 名册精确查询（单人查询）—— 排除含工作类型词的群体查询
-    _single_person_kws = ["是谁", "的资料", "的信息", "职位", "岗位", "身份证", "银行卡"]
+    _single_person_kws = ["是谁", "的资料", "的信息", "职位", "岗位", "身份证", "银行卡",
+                          "电话", "手机", "联系方式", "联系电话", "手机号"]
     if (any(kw in user_message for kw in _single_person_kws)
             and not any(kw in user_message for kw in _WORK_TYPE_KEYWORDS + ["多少", "几个", "列表", "所有", "部门"])):
         names = re.findall(r'[\u4e00-\u9fa5]{2,4}', user_message)
@@ -401,12 +402,19 @@ def process_message(user_message: str, user_id: str, sender_name: str,
             return get_roster_stats()
 
     # 其他（含复杂名册查询、实习生列表等）交给 LLM + 工具
+    # per-request 闭包：query_member 携带 is_hr 上下文
+    _available_functions = {
+        "query_member": lambda keyword: query_member(keyword, is_hr=is_hr),
+        "get_roster_stats": tool_get_roster_stats,
+        "query_roster_detail": tool_query_roster_detail,
+        "update_member": tool_update_member,
+    }
     try:
         return llm_client_v2.chat_with_tools(
             user_message=user_message,
             user_id=user_id,
             tools=TOOLS,
-            available_functions=AVAILABLE_FUNCTIONS,
+            available_functions=_available_functions,
             is_hr=is_hr
         )
     except Exception as e:
