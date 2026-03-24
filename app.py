@@ -121,8 +121,9 @@ def add_reaction(message_id: str, emoji_type: str = "STRIVE") -> bool:
 def _make_card(text: str) -> dict:
     """
     把文本包装成飞书卡片（lark_md 格式）。
-    卡片支持：Markdown 表格、**加粗**、--- 分割线、emoji 等。
+    自动把 Markdown 表格转换为分组块格式（lark_md 不支持 | 表格）。
     """
+    text = _convert_table_to_blocks(text)
     return {
         "config": {"wide_screen_mode": True},
         "elements": [
@@ -132,6 +133,74 @@ def _make_card(text: str) -> dict:
             }
         ]
     }
+
+
+def _convert_table_to_blocks(text: str) -> str:
+    """
+    把 Markdown 表格（| col | col |）转换为飞书 lark_md 支持的分组块格式。
+    表头行 + 分割行会被跳过，数据行格式化为：
+      **分类** · 数量
+      成员名单...
+    """
+    import re
+
+    def strip_bold(s: str) -> str:
+        return re.sub(r'\*{1,2}(.*?)\*{1,2}', r'\1', s).strip()
+
+    lines = text.split('\n')
+    result = []
+    header_skipped = False
+    in_table = False
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        is_table_row = bool(re.match(r'^\s*\|', line))
+        is_separator = bool(re.match(r'^\s*\|[-:\s|]+\|\s*$', line))
+
+        if is_separator:
+            # 分割行：标记表头已处理，跳过
+            header_skipped = True
+            in_table = True
+            i += 1
+            continue
+
+        if is_table_row:
+            cells = [c.strip() for c in line.strip().strip('|').split('|')]
+            cells = [c for c in cells if c]
+
+            if not header_skipped:
+                # 表头行，跳过
+                i += 1
+                continue
+
+            in_table = True
+            if len(cells) == 0:
+                i += 1
+                continue
+            elif len(cells) == 1:
+                result.append(f"**{strip_bold(cells[0])}**")
+            elif len(cells) == 2:
+                result.append(f"**{strip_bold(cells[0])}** · {strip_bold(cells[1])}")
+            else:
+                # col0=分类 col1=数量 col2+=成员
+                category = strip_bold(cells[0])
+                count = strip_bold(cells[1])
+                members = strip_bold(cells[2]) if len(cells) > 2 else ''
+                result.append(f"**{category}** · {count}")
+                if members:
+                    result.append(f"  {members}")
+            i += 1
+            continue
+
+        # 非表格行
+        if in_table and not is_table_row:
+            in_table = False
+            header_skipped = False
+        result.append(line)
+        i += 1
+
+    return '\n'.join(result)
 
 
 def reply_text(chat_id: str, text: str) -> bool:
