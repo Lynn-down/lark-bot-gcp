@@ -298,11 +298,11 @@ def handle_im_message(data) -> None:
         event = data.event
         message = event.message
         sender = event.sender.sender_id
-        
+
         msg_id = message.message_id
         chat_id = message.chat_id
         user_id = sender.user_id
-        sender_name = sender.name or ""
+        sender_name = getattr(event.sender, 'name', '') or ""
         
         # 解析消息内容
         try:
