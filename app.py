@@ -312,8 +312,10 @@ def process_message(user_message: str, user_id: str, sender_name: str,
             return query_member(names[0], is_hr=True)
         return "请告诉我要查哪位同学的薪资信息～"
 
-    # 名册精确查询（单人查询）
-    if any(kw in user_message for kw in ["是谁", "的资料", "的信息", "职位", "岗位", "部门", "身份证", "银行卡"]):
+    # 名册精确查询（单人查询）—— 排除含工作类型词的群体查询
+    _single_person_kws = ["是谁", "的资料", "的信息", "职位", "岗位", "身份证", "银行卡"]
+    if (any(kw in user_message for kw in _single_person_kws)
+            and not any(kw in user_message for kw in _WORK_TYPE_KEYWORDS + ["多少", "几个", "列表", "所有", "部门"])):
         names = re.findall(r'[\u4e00-\u9fa5]{2,4}', user_message)
         if names:
             return query_member(names[0], is_hr=is_hr)
