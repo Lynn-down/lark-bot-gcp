@@ -307,7 +307,7 @@ def get_roster_stats() -> str:
     global roster_manager
     if roster_manager is None:
         init_roster()
-    
+
     stats = roster_manager.get_statistics()
     lines = ["【人员统计】"]
     lines.append(f"总人数：{stats['total']} 人")
@@ -324,3 +324,80 @@ def get_roster_stats() -> str:
     lines.append(f"  代发：{stats['代发']} 人")
     lines.append(f"  劳务：{stats['劳务']} 人")
     return "\n".join(lines)
+
+
+# ─── 字段别名映射 ───────────────────────────────────────────────────────────────
+
+FIELD_ALIASES: Dict[str, str] = {
+    "姓名": "姓名", "名字": "姓名",
+    "职务": "合同职务", "岗位": "合同职务", "职位": "合同职务", "合同职务": "合同职务",
+    "工作类型": "工作类型", "类型": "工作类型", "雇佣类型": "工作类型",
+    "工作状态": "工作状态", "状态": "工作状态",
+    "部门": "部门", "团队": "部门",
+    "汇报给": "汇报给", "上级": "汇报给", "直接上级": "汇报给",
+    "薪资": "薪资", "工资": "薪资", "月薪": "薪资",
+    "入职日期": "入职日期", "入职时间": "入职日期",
+    "离职日期": "离职日期", "离职时间": "离职日期",
+    "身份证": "身份证号码", "身份证号": "身份证号码", "身份证号码": "身份证号码",
+    "邮箱": "邮箱", "工作邮箱": "邮箱",
+    "手机": "手机号", "电话": "手机号", "手机号": "手机号",
+    "银行卡": "银行卡号", "银行卡号": "银行卡号",
+    "开户行": "开户行",
+}
+
+
+def update_member(name: str, field: str, value: str) -> str:
+    """
+    更新名册中某成员的字段值，并持久化到 roster.json。
+    name : 成员姓名
+    field: 字段名（支持中文别名，如"职位"→"合同职务"）
+    value: 新的字段值
+    """
+    global roster_manager
+    if roster_manager is None:
+        init_roster()
+
+    # 解析字段别名
+    real_field = FIELD_ALIASES.get(field, field)
+    if real_field not in roster_manager.headers:
+        return f"❌ 未知字段：{field}（可用字段：{', '.join(FIELD_ALIASES.keys())}）"
+
+    col_idx = roster_manager.headers.index(real_field)
+
+    # 找到对应行（优先在职记录）
+    target_row_idx = None
+    name_lower = name.strip().lower()
+    for i, row in enumerate(roster_manager.data[1:], start=1):
+        row_name = roster_manager._get_field(row, "姓名").lower()
+        row_member = roster_manager._get_field(row, "人员").lower()
+        candidate = row_name or row_member
+        if not candidate:
+            continue
+        if name_lower in candidate or candidate in name_lower:
+            status = roster_manager._get_field(row, "工作状态")
+            if "在职" in status:
+                target_row_idx = i
+                break
+            if target_row_idx is None:
+                target_row_idx = i
+
+    if target_row_idx is None:
+        return f"❌ 未找到成员：{name}"
+
+    # 更新内存数据（补齐行长度）
+    row = roster_manager.data[target_row_idx]
+    while len(row) <= col_idx:
+        row.append("")
+    old_value = row[col_idx]
+    row[col_idx] = value
+
+    # 持久化到 roster.json
+    try:
+        roster_file = roster_manager.roster_file
+        with open(roster_file, 'w', encoding='utf-8') as f:
+            json.dump(roster_manager.data, f, ensure_ascii=False, indent=2)
+        return f"✅ 已将 {name} 的「{real_field}」从「{old_value}」更新为「{value}」"
+    except Exception as e:
+        # 写入失败时回滚内存
+        row[col_idx] = old_value
+        return f"❌ 更新失败（写入文件出错）：{e}"

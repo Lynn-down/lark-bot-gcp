@@ -1,7 +1,7 @@
 """
 Lark HR 小机器人 - v5.4
 """
-APP_VERSION = "v5.4-claude-opus"
+APP_VERSION = "v5.5-claude-opus"
 
 import os
 import re
@@ -29,7 +29,7 @@ from contract_generator import (
     extract_fields_via_llm,
     CONTRACT_TYPE_NAMES,
 )
-from roster_module import query_member, get_roster_stats, query_roster_detail, init_roster
+from roster_module import query_member, get_roster_stats, query_roster_detail, update_member, init_roster
 from email_sender import send_contract_email
 from llm_client_v2 import llm_client_v2
 
@@ -308,6 +308,9 @@ def tool_get_roster_stats() -> str:
 def tool_query_roster_detail(work_type: str = "", status: str = "在职") -> str:
     return query_roster_detail(work_type=work_type, status=status)
 
+def tool_update_member(name: str, field: str, value: str) -> str:
+    return update_member(name=name, field=field, value=value)
+
 TOOLS = [
     {
         "type": "function",
@@ -338,13 +341,30 @@ TOOLS = [
                 }
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_member",
+            "description": "更新名册中某成员的字段值并持久化保存。当用户说"张三换岗了"、"李四薪资调整为X"、"王五离职了"等，调用此工具更新信息。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "成员姓名"},
+                    "field": {"type": "string", "description": "要更新的字段，如：职位、薪资、工作状态、部门、手机号等"},
+                    "value": {"type": "string", "description": "新的字段值"}
+                },
+                "required": ["name", "field", "value"]
+            }
+        }
     }
 ]
 
 AVAILABLE_FUNCTIONS = {
     "query_member": tool_query_member,
     "get_roster_stats": tool_get_roster_stats,
-    "query_roster_detail": tool_query_roster_detail
+    "query_roster_detail": tool_query_roster_detail,
+    "update_member": tool_update_member
 }
 
 
@@ -405,9 +425,10 @@ def process_message(user_message: str, user_id: str, sender_name: str,
         if names:
             return query_member(names[0], is_hr=is_hr)
 
-    # 纯总人数统计（无具体类型词时直接返回）
+    # 纯总人数统计（无具体类型词、无部门词时直接返回）
+    _DEPT_KEYWORDS = ["部门", "部", "市场", "产品", "技术", "运营", "销售", "人力", "行政", "财务"]
     if any(kw in user_message for kw in ["多少人", "人数", "总人数", "统计"]):
-        if not any(kw in user_message for kw in _WORK_TYPE_KEYWORDS):
+        if not any(kw in user_message for kw in _WORK_TYPE_KEYWORDS + _DEPT_KEYWORDS):
             return get_roster_stats()
 
     # 其他（含复杂名册查询、实习生列表等）交给 LLM + 工具
