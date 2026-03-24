@@ -58,7 +58,7 @@ class LLMClientV2:
         self.api_key = os.environ.get("LLM_API_KEY", "")
         # 默认使用 Claude 3.5 Sonnet（比 gpt-4o-mini 强一个档次）
         # 可通过 .env 的 LLM_MODEL 覆盖
-        self.model = os.environ.get("LLM_MODEL", "gpt-4o")
+        self.model = os.environ.get("LLM_MODEL", "claude-3-7-sonnet-20250219")
         self.max_tokens = int(os.environ.get("LLM_MAX_TOKENS", "2000"))
         self.conversation_manager = ConversationManager(max_history=10)
     
