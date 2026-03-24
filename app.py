@@ -533,10 +533,22 @@ def handle_im_message(data) -> None:
         if not text:
             logger.info("Empty message")
             return
-        
+
+        # 过期消息丢弃（防服务重启后重复处理 Feishu 重试包）
+        create_time = getattr(message, 'create_time', None)
+        if create_time:
+            try:
+                msg_ts = int(create_time) / 1000  # ms → s
+                age = time.time() - msg_ts
+                if age > 120:  # 超过 2 分钟的消息直接跳过
+                    logger.info(f"Stale message (age {int(age)}s), skipping: {text[:30]}")
+                    return
+            except Exception:
+                pass
+
         logger.info(f"Message from {sender_name}({user_id}): {text[:50]}")
-        
-        # 去重
+
+        # 去重（同一次运行内防重复投递）
         with _processed_lock:
             if msg_id in _processed_ids:
                 return
