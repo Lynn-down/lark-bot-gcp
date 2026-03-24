@@ -44,7 +44,8 @@ def send_contract_email(to_email, contract_path, employee_name, contract_type):
                 attachment = MIMEBase('application', 'vnd.openxmlformats-officedocument.wordprocessingml.document')
                 attachment.set_payload(f.read())
             encoders.encode_base64(attachment)
-            filename = os.path.basename(contract_path)
+            # 附件名统一格式：姓名-合同类型.docx
+            filename = f"{employee_name}-{contract_type}.docx"
             attachment.add_header('Content-Disposition', f'attachment; filename="{filename}"')
             msg.attach(attachment)
         else:
