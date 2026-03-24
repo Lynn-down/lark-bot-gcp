@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # 配置
 DEFAULT_HR_EMAIL = "jyx@group-ultra.com"
 HR_USERS = ["蒋雨萱", "丁怡菲", "刘怡馨", "triplet", "戴祥和", "陈春宇"]
-HR_USER_IDS = ["946d1fc5", "9ddfdb23", "triplet"]  # 946d1fc5=陈春宇(CEO) 9ddfdb23=丁怡菲
+HR_USER_IDS = ["946d1fc5", "9ddfdb23", "9bbc73b9", "triplet"]  # 946d1fc5=陈春宇 9ddfdb23=丁怡菲 9bbc73b9=刘怡馨
 
 # 待处理合同状态（多轮追问）user_id → {contract_type, fields, chat_id, msg_id}
 _pending_contracts: Dict[str, Dict] = {}
@@ -258,45 +258,6 @@ def reply_to_message(parent_msg_id: str, text: str) -> bool:
         return False
 
 
-def get_onboarding_info(is_hr: bool) -> str:
-    """入职信息查询"""
-    if is_hr:
-        return """【HR入职管理指南】📋
-
-入职前准备：
-1. 确认offer信息
-2. 准备劳动合同/劳务合同
-3. 开通飞书账号和邮箱
-4. 安排工位和设备
-
-入职当天：
-1. 上午10点接待
-2. 签署合同
-3. 配置环境
-4. 团队介绍
-
-注意：实习生签劳务合同，全职签劳动合同"""
-    else:
-        return """【新员工入职指南】🎉
-
-入职准备：
-请携带：身份证、学历证明、离职证明、一寸照片2张、银行卡
-
-入职当天：
-📍 东升大厦A座4楼
-⏰ 上午10点
-👤 联系人：陆俊豪
-
-当天流程：
-1. 前台联系陆俊豪
-2. 签署劳动合同
-3. 配置飞书账号
-4. 领取入职礼包
-5. 熟悉环境
-
-有问题随时问HR！😊"""
-
-
 # ============ 工具定义 ============
 
 def tool_query_member(keyword: str) -> str:
@@ -413,9 +374,8 @@ def process_message(user_message: str, user_id: str, sender_name: str,
         else:
             return handle_contract(user_message, user_id, chat_id, msg_id)
 
-    # 入职查询
-    if any(kw in user_message for kw in ["入职", "新员工", "报到"]):
-        return get_onboarding_info(is_hr)
+    # 入职查询 → 交给 LLM（知识库已内嵌在 system prompt 中，LLM 根据 is_hr 决定显示哪些内容）
+    # （原 get_onboarding_info 已移除，LLM 直接回答）
 
     # 薪资敏感信息：HR 可查，非HR 拒绝
     if any(kw in user_message for kw in ["薪资", "工资", "底薪", "绩效", "涨薪", "薪酬", "到手", "用人成本"]):
@@ -446,7 +406,8 @@ def process_message(user_message: str, user_id: str, sender_name: str,
             user_message=user_message,
             user_id=user_id,
             tools=TOOLS,
-            available_functions=AVAILABLE_FUNCTIONS
+            available_functions=AVAILABLE_FUNCTIONS,
+            is_hr=is_hr
         )
     except Exception as e:
         logger.error(f"LLM error: {e}")
