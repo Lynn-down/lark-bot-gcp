@@ -29,8 +29,13 @@ from contract_generator import (
     extract_fields_via_llm,
     CONTRACT_TYPE_NAMES,
 )
+from offboarding_generator import (
+    generate_resignation_certificate,
+    generate_termination_agreement,
+    build_offboarding_email,
+)
 from roster_module import query_member, get_roster_stats, query_roster_detail, update_member, init_roster
-from email_sender import send_contract_email
+from email_sender import send_contract_email, send_plain_email
 from llm_client_v2 import llm_client_v2
 
 app = Flask(__name__)
@@ -248,7 +253,36 @@ def send_file_to_chat(chat_id: str, file_path: str, file_name: str) -> bool:
         return False
 
 
+def send_dm_to_user(target_user_id: str, text: str) -> bool:
+    """发私信给指定 user_id 的用户"""
+    try:
+        headers = {
+            "Authorization": f"Bearer {get_access_token()}",
+            "Content-Type": "application/json",
+        }
+        resp = requests.post(
+            f"{OPEN_API_BASE}/im/v1/messages?receive_id_type=user_id",
+            headers=headers,
+            json={
+                "receive_id": target_user_id,
+                "msg_type": "text",
+                "content": json.dumps({"text": text}),
+            },
+            timeout=10,
+        )
+        data = resp.json()
+        if data.get("code") == 0:
+            logger.info(f"DM sent to user {target_user_id}")
+            return True
+        else:
+            logger.error(f"DM failed: {data}")
+            return False
+    except Exception as e:
+        logger.error(f"send_dm_to_user error: {e}")
+        return False
 
+
+def reply_text(chat_id: str, text: str) -> bool:
     """发送卡片消息（lark_md，支持 Markdown 表格/加粗/分割线）"""
     try:
         headers = {
@@ -419,6 +453,18 @@ def process_message(user_message: str, user_id: str, sender_name: str,
         else:
             return handle_contract(user_message, user_id, chat_id, msg_id)
 
+    # 离职流程（仅HR）
+    _OFFBOARDING_KWS = ["离职", "解除合同", "终止合同", "辞职", "辞退", "最后工作日"]
+    _OFFBOARDING_INQUIRY_KWS = ["能", "会", "可以", "支持", "什么是", "怎么", "流程", "步骤"]
+    _is_offboarding_inquiry = any(kw in user_message for kw in _OFFBOARDING_INQUIRY_KWS)
+    if any(kw in user_message for kw in _OFFBOARDING_KWS):
+        if _is_offboarding_inquiry:
+            pass  # 流程询问，交给 LLM 回答
+        elif not is_hr:
+            return "离职流程由HR处理，有疑问请联系HR～"
+        else:
+            return handle_offboarding(user_message, user_id, chat_id, msg_id)
+
     # 入职查询 → 交给 LLM（知识库已内嵌在 system prompt 中，LLM 根据 is_hr 决定显示哪些内容）
     # （原 get_onboarding_info 已移除，LLM 直接回答）
 
@@ -561,6 +607,146 @@ def handle_contract(user_message: str, user_id: str = "",
 
     threading.Thread(target=_background, daemon=True).start()
     return summary_text
+
+
+# ─── 离职流程 ────────────────────────────────────────────────────────────────
+
+JUNHAO_USER_ID = "dc84a3bd"   # 陆俊豪
+LYNN_USER_ID   = "946d1fc5"   # 蒋雨萱（邮件发送失败时私信她）
+
+
+def _extract_offboarding_fields(user_message: str) -> dict:
+    """用 LLM 提取离职相关字段（姓名、最后工作日）"""
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "从用户消息中提取离职相关字段，只返回纯 JSON，不加任何解释。\n"
+                "可提取字段：\n"
+                "  name       离职员工姓名\n"
+                "  leave_date 最后工作日 YYYY-MM-DD\n"
+                "未明确提及的字段不要输出。"
+            )
+        },
+        {"role": "user", "content": user_message}
+    ]
+    try:
+        resp = llm_client_v2._call_api(messages, tools=None, temperature=0)
+        content = resp["choices"][0]["message"].get("content", "")
+        import re as _re
+        content = _re.sub(r'^```(?:json)?\s*', '', content.strip())
+        content = _re.sub(r'\s*```$', '', content)
+        return json.loads(content)
+    except Exception as e:
+        logger.error(f"Offboarding field extraction failed: {e}")
+        # 正则兜底
+        fields = {}
+        m = re.search(r'[\u4e00-\u9fa5]{2,4}(?=.*离职|.*最后)', user_message)
+        if m:
+            fields["name"] = m.group(0)
+        m = re.search(r'(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})', user_message)
+        if m:
+            fields["leave_date"] = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+        return fields
+
+
+def handle_offboarding(user_message: str, user_id: str = "",
+                       chat_id: str = "", msg_id: str = "") -> str:
+    """
+    处理离职流程请求（HR专属）：
+    - 正职：离职协议 + 离职证明 + 离职邮件
+    - 实习生：仅离职邮件
+    - 所有人：私信陆俊豪提醒关闭 Lark 权限
+    """
+    fields = _extract_offboarding_fields(user_message)
+    name       = fields.get("name", "")
+    leave_date = fields.get("leave_date", "")
+
+    if not name:
+        return "请告诉我是谁要离职 😮"
+    if not leave_date:
+        return f"收到 {name} 离职的消息，请问最后工作日是哪天？"
+
+    # 从名册补充信息
+    from roster_module import roster_manager as _rm
+    person     = _rm.query_by_name(name) if _rm else None
+    work_type  = ""
+    emp_email  = ""
+    if person:
+        work_type = person.get("工作类型", "")
+        emp_email = person.get("邮箱", "")
+        fields.setdefault("start_date",  person.get("开始日期", ""))
+        fields.setdefault("job_title",   person.get("合同职务", ""))
+        fields.setdefault("id_number",   person.get("身份证号", ""))
+        fields.setdefault("phone",       person.get("手机号", "") or
+                                         person.get("收款银行预留手机号", ""))
+        fields.setdefault("department",  person.get("部门", ""))
+
+    is_intern = "实习" in work_type
+    type_desc = "实习生" if is_intern else "正职员工"
+
+    from offboarding_generator import _fmt_cn
+    leave_cn = _fmt_cn(leave_date)
+    summary  = (
+        f"收到 **{name}**（{type_desc}）离职申请 ✅\n"
+        f"最后工作日：{leave_cn}\n"
+        f"正在生成材料，稍后发到此对话 📄"
+    )
+
+    def _background():
+        try:
+            # ① 正职：生成离职协议 + 离职证明并发到飞书
+            if not is_intern:
+                try:
+                    ag_path   = generate_termination_agreement(fields, output_name=name)
+                    cert_path = generate_resignation_certificate(fields, output_name=name)
+                    if chat_id:
+                        send_file_to_chat(chat_id, ag_path,   f"{name}-离职协议.docx")
+                        send_file_to_chat(chat_id, cert_path, f"{name}-离职证明.docx")
+                except Exception as e:
+                    logger.error(f"Offboarding doc error: {e}", exc_info=True)
+                    if chat_id:
+                        reply_text(chat_id, f"⚠️ 文档生成出错：{str(e)[:120]}")
+
+            # ② 离职邮件：优先发到员工邮箱，否则私信蒋雨萱
+            subject, body = build_offboarding_email(fields)
+            if emp_email:
+                result = send_plain_email(emp_email, subject, body)
+                if result["success"]:
+                    logger.info(f"Offboarding email sent to {emp_email}")
+                    if chat_id:
+                        reply_text(chat_id, f"✅ 离职通知邮件已发送至 {emp_email}")
+                else:
+                    logger.warning(f"Email failed, notifying Lynn instead: {result['message']}")
+                    _fallback_dm_lynn(name, subject, body)
+            else:
+                logger.info(f"No email for {name}, sending text to Lynn")
+                _fallback_dm_lynn(name, subject, body)
+
+            # ③ 私信陆俊豪关闭 Lark 权限
+            dm_text = (
+                f"Hi 俊豪，{name} 最后工作日是 {leave_cn}，"
+                f"记得到时候及时关闭 ta 的 Lark 权限哦 👌"
+            )
+            send_dm_to_user(JUNHAO_USER_ID, dm_text)
+
+        except Exception as e:
+            logger.error(f"Offboarding background error: {e}", exc_info=True)
+            if chat_id:
+                reply_text(chat_id, f"❌ 离职流程处理出错：{str(e)[:100]}")
+
+    threading.Thread(target=_background, daemon=True).start()
+    return summary
+
+
+def _fallback_dm_lynn(name: str, subject: str, body: str):
+    """无法发邮件时，把邮件内容以私信形式发给蒋雨萱"""
+    text = (
+        f"📧 {name} 的离职通知邮件（未找到邮箱，请手动发送）\n\n"
+        f"主题：{subject}\n\n"
+        f"{body}"
+    )
+    send_dm_to_user(LYNN_USER_ID, text)
 
 
 # ============ 飞书事件处理 ============

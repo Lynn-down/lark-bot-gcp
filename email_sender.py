@@ -64,5 +64,22 @@ def send_contract_email(to_email, contract_path, employee_name, contract_type):
         return {'success': False, 'message': f'邮件发送失败: {str(e)}'}
 
 
-def send_contract_with_fallback(to_email, contract_path, employee_name, contract_type):
+def send_plain_email(to_email: str, subject: str, body: str) -> dict:
+    """发送纯文字邮件（不含附件）"""
+    try:
+        msg = MIMEMultipart()
+        msg['From']    = SMTP_USER
+        msg['To']      = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+        server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT)
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        return {'success': True, 'message': f'邮件已发送至 {to_email}'}
+    except Exception as e:
+        return {'success': False, 'message': f'邮件发送失败: {str(e)}'}
+
+
+
     return send_contract_email(to_email, contract_path, employee_name, contract_type)
