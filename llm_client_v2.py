@@ -56,7 +56,9 @@ class LLMClientV2:
     def __init__(self):
         self.api_url = os.environ.get("LLM_API_URL", "https://api.ablai.top/v1/chat/completions")
         self.api_key = os.environ.get("LLM_API_KEY", "")
-        self.model = os.environ.get("LLM_MODEL", "claude-sonnet-4-5-20241022")
+        # 默认使用 Claude 3.5 Sonnet（比 gpt-4o-mini 强一个档次）
+        # 可通过 .env 的 LLM_MODEL 覆盖
+        self.model = os.environ.get("LLM_MODEL", "claude-3-5-sonnet-20241022")
         self.max_tokens = int(os.environ.get("LLM_MAX_TOKENS", "2000"))
         self.conversation_manager = ConversationManager(max_history=10)
     
