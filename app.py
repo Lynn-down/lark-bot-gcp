@@ -173,7 +173,7 @@ def reply_to_message(parent_msg_id: str, text: str) -> bool:
         return False
 
 
-(is_hr: bool) -> str:
+def get_onboarding_info(is_hr: bool) -> str:
     """入职信息查询"""
     if is_hr:
         return """【HR入职管理指南】📋
