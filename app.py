@@ -57,6 +57,32 @@ _MAX_PROCESSED = 5000
 _processed_ids: set = set()
 _processed_lock = threading.Lock()
 
+# 飞书 access token 缓存
+_token_cache: Dict[str, Any] = {"token": "", "expires_at": 0}
+
+def get_access_token() -> str:
+    """获取 tenant_access_token（带缓存，有效期内复用）"""
+    now = time.time()
+    if _token_cache["token"] and now < _token_cache["expires_at"] - 60:
+        return _token_cache["token"]
+    try:
+        resp = requests.post(
+            f"{OPEN_API_BASE}/auth/v3/tenant_access_token/internal",
+            json={"app_id": APP_ID, "app_secret": APP_SECRET},
+            timeout=10
+        )
+        data = resp.json()
+        if data.get("code") == 0:
+            _token_cache["token"] = data["tenant_access_token"]
+            _token_cache["expires_at"] = now + data.get("expire", 7200)
+            logger.info("Access token refreshed")
+            return _token_cache["token"]
+        else:
+            logger.error(f"Token fetch failed: {data}")
+    except Exception as e:
+        logger.error(f"Token fetch error: {e}")
+    return ""
+
 
 def is_hr_user(sender_name: str, sender_id: str = "") -> bool:
     """判断用户是否是HR"""
@@ -74,7 +100,7 @@ def is_hr_user(sender_name: str, sender_id: str = "") -> bool:
 def add_reaction(message_id: str, emoji_type: str = "STRIVE") -> bool:
     """添加表情回应"""
     try:
-        token = os.environ.get("LARK_APP_SECRET", "")
+        token = get_access_token()
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         r = requests.post(
             f"{OPEN_API_BASE}/im/v1/messages/{message_id}/reactions",
@@ -92,7 +118,7 @@ def reply_text(chat_id: str, text: str) -> bool:
     """发送文本消息"""
     try:
         headers = {
-            "Authorization": f"Bearer {os.environ.get('LARK_APP_SECRET', '')}",
+            "Authorization": f"Bearer {get_access_token()}",
             "Content-Type": "application/json"
         }
         resp = requests.post(
