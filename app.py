@@ -237,6 +237,10 @@ def process_message(user_message: str, user_id: str, sender_name: str) -> str:
     if any(kw in user_message for kw in ["入职", "新员工", "报到"]):
         return get_onboarding_info(is_hr)
     
+    # 薪资/合同等敏感信息：直接告知需联系HR
+    if any(kw in user_message for kw in ["薪资", "工资", "底薪", "绩效", "涨薪", "薪酬"]):
+        return "薪资属于保密信息，我这里没有这个数据哦～ 具体请直接联系HR确认 🙏"
+
     # 名册查询（直接处理，不经过LLM）
     if any(kw in user_message for kw in ["是谁", "的资料", "的信息", "职位", "岗位", "部门", "联系方式", "邮箱", "电话"]):
         names = re.findall(r'[\u4e00-\u9fa5]{2,4}', user_message)
@@ -375,10 +379,16 @@ def handle_reaction_event(data) -> None:
     pass
 
 
+def handle_message_read_event(data) -> None:
+    """忽略消息已读事件"""
+    pass
+
+
 # 飞书事件处理器
 handler = lark.EventDispatcherHandler.builder(ENCRYPT_KEY, VERIFICATION_TOKEN, lark.LogLevel.INFO) \
     .register_p2_im_message_receive_v1(handle_im_message) \
     .register_p2_im_message_reaction_created_v1(handle_reaction_event) \
+    .register_p2_im_message_message_read_v1(handle_message_read_event) \
     .build()
 
 
