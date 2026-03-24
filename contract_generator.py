@@ -422,6 +422,52 @@ CONTRACT_EXTRACT_SYSTEM_PROMPT = """你是一个合同信息提取助手。
 只包含用户消息中明确提到的字段，未提及的字段不要输出。"""
 
 
+def _extract_fields_regex(text: str) -> dict:
+    """
+    纯正则兜底提取合同字段（LLM 不可用时使用）。
+    支持格式：姓名张三 / 姓名：张三 / 姓名是张三 等
+    """
+    fields = {}
+
+    # 姓名
+    m = re.search(r'姓名[是为：:\s]*([^\s，,。！?、]{2,5})', text)
+    if m:
+        fields['name'] = m.group(1).strip()
+
+    # 职位 / 岗位 / 职务
+    m = re.search(r'(?:职位|岗位|职务|职称|职责)[是为：:\s]*([^\s，,。！?\d、]{2,15})', text)
+    if m:
+        fields['job_title'] = m.group(1).strip()
+
+    # 薪资 / 工资 / 月薪
+    m = re.search(r'(?:薪资|工资|月薪|薪酬|底薪)[是为：:\s]*([0-9,，.]+)', text)
+    if m:
+        fields['salary'] = m.group(1).replace(',', '').replace('，', '').replace('.', '')
+
+    # 身份证号（18位）
+    m = re.search(r'(?:身份证[号码]?)[是为：:\s]*([0-9Xx]{18})', text)
+    if m:
+        fields['id_number'] = m.group(1).upper()
+
+    # 手机 / 电话
+    m = re.search(r'(?:手机|电话)[号码]?[是为：:\s]*([1][3-9][0-9]{9})', text)
+    if m:
+        fields['phone'] = m.group(1)
+
+    # 入职日期
+    m = re.search(r'(?:入职|开始)[日期时间]?[是为：:\s]*(\d{4}[年/-]\d{1,2}[月/-]\d{1,2})', text)
+    if m:
+        d = re.sub(r'[年月]', '-', m.group(1)).rstrip('日').replace('/', '-')
+        fields['start_date'] = d
+
+    # 工作地点
+    m = re.search(r'(?:工作地点|工作地|城市)[是为：:\s]*([^\s，,。！?、]{2,10})', text)
+    if m:
+        fields['work_location'] = m.group(1).strip()
+
+    return fields
+
+
 def extract_fields_via_llm(user_message: str, llm_client) -> tuple:
     """
     调用 LLM 从用户消息中提取合同字段。
@@ -442,13 +488,20 @@ def extract_fields_via_llm(user_message: str, llm_client) -> tuple:
         resp = llm_client._call_api(messages, tools=None, temperature=0)
         if "error" in resp:
             logger.error(f"LLM extract error: {resp['error']}")
-            return contract_type, {}
+            # LLM 失败时用 regex 兜底
+            return contract_type, _extract_fields_regex(user_message)
         content = resp["choices"][0]["message"].get("content", "")
         # 兼容带 markdown 代码块的输出
         content = re.sub(r'^```(?:json)?\s*', '', content.strip())
         content = re.sub(r'\s*```$', '', content)
         fields = json.loads(content)
+        # 合并 regex 兜底（LLM 漏掉的字段用 regex 补充）
+        regex_fields = _extract_fields_regex(user_message)
+        for k, v in regex_fields.items():
+            if k not in fields or not fields[k]:
+                fields[k] = v
         return contract_type, fields
     except Exception as e:
         logger.error(f"extract_fields_via_llm failed: {e}")
-        return contract_type, {}
+        # 异常时也用 regex 兜底
+        return contract_type, _extract_fields_regex(user_message)
