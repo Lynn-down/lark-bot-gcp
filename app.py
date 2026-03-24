@@ -26,7 +26,7 @@ from contract_generator import (
     extract_fields_via_llm,
     CONTRACT_TYPE_NAMES,
 )
-from roster_module import query_member, get_roster_stats, init_roster
+from roster_module import query_member, get_roster_stats, query_roster_detail, init_roster
 from email_sender import send_contract_email
 from llm_client_v2 import llm_client_v2
 
@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_HR_EMAIL = "jyx@group-ultra.com"
 HR_USERS = ["蒋雨萱", "丁怡菲", "刘怡馨", "triplet", "戴祥和", "陈春宇"]
 HR_USER_IDS = ["946d1fc5", "triplet"]  # 946d1fc5 = 陈春宇（CEO）
+
+# 待处理合同状态（多轮追问）user_id → {contract_type, fields, chat_id, msg_id}
+_pending_contracts: Dict[str, Dict] = {}
+_pending_lock = threading.Lock()
 
 # 飞书配置
 ENCRYPT_KEY = os.environ.get("LARK_ENCRYPT_KEY", "")
@@ -142,7 +146,34 @@ def reply_text(chat_id: str, text: str) -> bool:
         return False
 
 
-def get_onboarding_info(is_hr: bool) -> str:
+def reply_to_message(parent_msg_id: str, text: str) -> bool:
+    """引用回复某条消息"""
+    try:
+        headers = {
+            "Authorization": f"Bearer {get_access_token()}",
+            "Content-Type": "application/json"
+        }
+        resp = requests.post(
+            f"{OPEN_API_BASE}/im/v1/messages/{parent_msg_id}/reply",
+            headers=headers,
+            json={
+                "msg_type": "text",
+                "content": json.dumps({"text": text})
+            },
+            timeout=10
+        )
+        if resp.status_code == 200:
+            logger.info(f"Quoted reply sent to {parent_msg_id}")
+            return True
+        else:
+            logger.error(f"Quoted reply failed: {resp.status_code} {resp.text[:200]}")
+            return False
+    except Exception as e:
+        logger.error(f"Quoted reply exception: {e}")
+        return False
+
+
+(is_hr: bool) -> str:
     """入职信息查询"""
     if is_hr:
         return """【HR入职管理指南】📋
@@ -189,74 +220,110 @@ def tool_query_member(keyword: str) -> str:
 def tool_get_roster_stats() -> str:
     return get_roster_stats()
 
+def tool_query_roster_detail(work_type: str = "", status: str = "在职") -> str:
+    return query_roster_detail(work_type=work_type, status=status)
+
 TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "query_member",
-            "description": "Query member info",
-            "parameters": {"type": "object", "properties": {"keyword": {"type": "string"}}, "required": ["keyword"]}
+            "description": "查询某个具体成员的详细信息，输入姓名或关键词",
+            "parameters": {"type": "object", "properties": {"keyword": {"type": "string", "description": "成员姓名"}}, "required": ["keyword"]}
         }
     },
     {
         "type": "function",
         "function": {
             "name": "get_roster_stats",
-            "description": "Get personnel statistics",
+            "description": "获取公司总体人员统计数据（总人数、在职/离职数、各类型人数）",
             "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_roster_detail",
+            "description": "按工作类型和状态查询人员详细列表。例如：查实习生列表、查全职员工列表。work_type可选：全职/实习/兼职/顾问/代发/劳务；status可选：在职/离职归档",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "work_type": {"type": "string", "description": "工作类型，如：实习、全职、顾问"},
+                    "status": {"type": "string", "description": "工作状态，默认在职", "default": "在职"}
+                }
+            }
         }
     }
 ]
 
 AVAILABLE_FUNCTIONS = {
     "query_member": tool_query_member,
-    "get_roster_stats": tool_get_roster_stats
+    "get_roster_stats": tool_get_roster_stats,
+    "query_roster_detail": tool_query_roster_detail
 }
 
 
 # ============ 核心处理逻辑 ============
 
-def process_message(user_message: str, user_id: str, sender_name: str) -> str:
+# 工作类型关键词（用于判断是否需要 LLM 处理，而非直接统计）
+_WORK_TYPE_KEYWORDS = ["实习生", "实习", "全职", "兼职", "顾问", "代发", "劳务"]
+
+def process_message(user_message: str, user_id: str, sender_name: str,
+                    chat_id: str = "", msg_id: str = "") -> str:
     """处理用户消息"""
     logger.info(f"[{user_id}/{sender_name}] Processing: {user_message[:50]}")
-    
+
     # 特殊命令
     if user_message.lower() in ["/clear", "清空", "忘记"]:
         llm_client_v2.conversation_manager.clear_history(user_id)
+        with _pending_lock:
+            _pending_contracts.pop(user_id, None)
         return "好的，之前的对话我都忘啦🙃"
-    
+
     is_hr = is_hr_user(sender_name, user_id)
-    
+
+    # ── 合同追问状态（用户已发起合同但字段不全）──
+    with _pending_lock:
+        pending = _pending_contracts.get(user_id)
+
+    if pending and not any(kw in user_message for kw in ["合同", "劳动合同", "劳务合同", "实习合同"]):
+        # 把用户的补充内容合并到原始消息再重新处理
+        merged = pending["original"] + " " + user_message
+        with _pending_lock:
+            _pending_contracts.pop(user_id, None)
+        return handle_contract(merged, user_id, chat_id, msg_id)
+
     # 合同生成（仅HR）
     if any(kw in user_message for kw in ["合同", "劳动合同", "劳务合同", "实习合同"]):
         if not is_hr:
             return "合同生成功能仅限HR使用哦～"
-        return handle_contract(user_message)
-    
+        return handle_contract(user_message, user_id, chat_id, msg_id)
+
     # 入职查询
     if any(kw in user_message for kw in ["入职", "新员工", "报到"]):
         return get_onboarding_info(is_hr)
-    
-    # 薪资/合同等敏感信息：HR 可查，非HR 告知联系HR
+
+    # 薪资敏感信息：HR 可查，非HR 拒绝
     if any(kw in user_message for kw in ["薪资", "工资", "底薪", "绩效", "涨薪", "薪酬", "到手", "用人成本"]):
         if not is_hr:
-            return "薪资属于保密信息，我这里没有这个数据哦～ 具体请直接联系HR确认 🙏"
-        # HR 可以查
+            return "薪资属于保密信息，具体请直接联系HR确认 🙏"
         names = re.findall(r'[\u4e00-\u9fa5]{2,4}', user_message)
         if names:
             return query_member(names[0], is_hr=True)
         return "请告诉我要查哪位同学的薪资信息～"
 
-    # 名册查询（直接处理，不经过LLM）
-    if any(kw in user_message for kw in ["是谁", "的资料", "的信息", "职位", "岗位", "部门", "联系方式", "邮箱", "电话", "身份证", "银行卡", "合同"]):
+    # 名册精确查询（单人查询）
+    if any(kw in user_message for kw in ["是谁", "的资料", "的信息", "职位", "岗位", "部门", "身份证", "银行卡"]):
         names = re.findall(r'[\u4e00-\u9fa5]{2,4}', user_message)
         if names:
             return query_member(names[0], is_hr=is_hr)
-    
-    if any(kw in user_message for kw in ["多少", "几个", "人数", "统计"]):
-        return get_roster_stats()
-    
-    # 其他使用LLM
+
+    # 纯总人数统计（无具体类型词时直接返回）
+    if any(kw in user_message for kw in ["多少人", "人数", "总人数", "统计"]):
+        if not any(kw in user_message for kw in _WORK_TYPE_KEYWORDS):
+            return get_roster_stats()
+
+    # 其他（含复杂名册查询、实习生列表等）交给 LLM + 工具
     try:
         return llm_client_v2.chat_with_tools(
             user_message=user_message,
@@ -269,42 +336,65 @@ def process_message(user_message: str, user_id: str, sender_name: str) -> str:
         return "我现在有点忙，请稍后再试～"
 
 
-def handle_contract(user_message: str) -> str:
+def handle_contract(user_message: str, user_id: str = "",
+                    chat_id: str = "", msg_id: str = "") -> str:
     """
-    处理合同生成请求。
-    1. 识别合同类型（劳动/劳务/实习）
-    2. 用 LLM 提取字段（支持自然语言描述）
-    3. 校验必填字段，缺失时提示补充
-    4. 后台生成 DOCX 并发送邮件
+    处理合同生成请求（支持多轮追问）。
+    1. 识别合同类型
+    2. LLM 提取字段
+    3. 缺失必填字段时追问，保存待处理状态
+    4. 字段完整时：列出字段摘要 → 后台生成 → 引用回复确认
     """
-    # ── 识别合同类型 ──
     contract_type = detect_contract_type(user_message)
     cn_name = CONTRACT_TYPE_NAMES[contract_type]
 
-    # ── LLM 提取字段 ──
+    # LLM 提取字段
     try:
         _, fields = extract_fields_via_llm(user_message, llm_client_v2)
     except Exception as e:
         logger.error(f"Field extraction failed: {e}")
         fields = {}
 
-    # ── 必填字段校验 ──
+    # 必填字段校验
     required = {"name": "姓名", "job_title": "岗位名称", "salary": "薪资"}
     missing = [cn for k, cn in required.items()
-               if not fields.get(k) or fields[k] in ("", "XXX")]
+               if not fields.get(k) or str(fields[k]).strip() in ("", "XXX")]
+
     if missing:
+        # 保存待处理状态（用于下一条消息的补充）
+        with _pending_lock:
+            _pending_contracts[user_id] = {
+                "original": user_message,
+                "contract_type": contract_type,
+            }
         return (f"收到你要生成「{cn_name}」的需求 ✅\n"
-                f"还缺少以下信息，补充后我马上生成：\n"
+                f"还需要以下信息，补充后我马上生成：\n"
                 + "\n".join(f"  • {m}" for m in missing))
+
+    # 清除待处理状态
+    with _pending_lock:
+        _pending_contracts.pop(user_id, None)
 
     name = fields["name"]
 
-    # ── 后台生成 + 发送邮件 ──
+    # 字段摘要（不展示合同内容，只列出提取到的信息）
+    field_labels = {
+        "name": "姓名", "job_title": "岗位名称", "salary": "薪资",
+        "start_date": "入职日期", "duration": "合同时长", "id_number": "身份证号",
+        "address": "联系地址", "hukou_address": "户籍地址",
+    }
+    summary_lines = [f"📋 合同信息确认："]
+    summary_lines.append(f"  合同类型：{cn_name}")
+    for k, label in field_labels.items():
+        if fields.get(k) and str(fields[k]).strip() not in ("", "XXX"):
+            summary_lines.append(f"  {label}：{fields[k]}")
+    summary_lines.append(f"\n正在生成合同文档，稍后发送至 {DEFAULT_HR_EMAIL} ✉️")
+    summary_text = "\n".join(summary_lines)
+
+    # 后台生成 + 发邮件 + 引用回复确认
     def _background():
         try:
-            # 默认填补常用字段
-            fields.setdefault("sign_date",
-                              datetime.now().strftime("%Y-%m-%d"))
+            fields.setdefault("sign_date", datetime.now().strftime("%Y-%m-%d"))
             fields.setdefault("work_location", "北京市")
             if contract_type == "labor":
                 fields.setdefault("duration", "3")
@@ -316,13 +406,19 @@ def handle_contract(user_message: str) -> str:
             path = generate_contract(contract_type, fields, output_name=name)
             send_contract_email(DEFAULT_HR_EMAIL, path, name, cn_name)
             logger.info(f"Contract sent: {path}")
+
+            # 引用回复确认（回复用户原消息）
+            if msg_id:
+                reply_to_message(msg_id, f"✅ {name}的{cn_name}已生成并发送至 {DEFAULT_HR_EMAIL}")
+            elif chat_id:
+                reply_text(chat_id, f"✅ {name}的{cn_name}已生成并发送至 {DEFAULT_HR_EMAIL}")
         except Exception as e:
             logger.error(f"Contract generation/send error: {e}", exc_info=True)
+            if chat_id:
+                reply_text(chat_id, f"❌ 合同生成失败，请检查模板或联系管理员：{str(e)[:100]}")
 
     threading.Thread(target=_background, daemon=True).start()
-    return (f"收到！正在为「{name}」生成{cn_name} 📄\n"
-            f"使用真实模板，格式与纸质版完全一致。\n"
-            f"稍后发送至 {DEFAULT_HR_EMAIL} ✉️")
+    return summary_text
 
 
 # ============ 飞书事件处理 ============
@@ -369,7 +465,7 @@ def handle_im_message(data) -> None:
             pass
         
         # 处理并回复
-        reply = process_message(text, user_id, sender_name)
+        reply = process_message(text, user_id, sender_name, chat_id=chat_id, msg_id=msg_id)
         logger.info(f"Reply: {reply[:100]}")
         
         success = reply_text(chat_id, reply)

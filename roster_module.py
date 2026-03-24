@@ -237,6 +237,76 @@ def get_roster_stats() -> str:
     global roster_manager
     if roster_manager is None:
         init_roster()
+
+    stats = roster_manager.get_statistics()
+    lines = ["【人员统计】"]
+    lines.append(f"总人数：{stats['total']} 人")
+    lines.append(f"")
+    lines.append(f"按状态：")
+    lines.append(f"  在职：{stats['在职']} 人")
+    lines.append(f"  离职归档：{stats['离职归档']} 人")
+    lines.append(f"")
+    lines.append(f"按类型：")
+    lines.append(f"  全职：{stats['全职']} 人")
+    lines.append(f"  实习：{stats['实习']} 人")
+    lines.append(f"  兼职：{stats['兼职']} 人")
+    lines.append(f"  顾问：{stats['顾问']} 人")
+    lines.append(f"  代发：{stats['代发']} 人")
+    lines.append(f"  劳务：{stats['劳务']} 人")
+    return "\n".join(lines)
+
+def query_roster_detail(work_type: str = "", status: str = "在职") -> str:
+    """
+    按工作类型和状态查询详细人员列表（供LLM工具调用）
+    work_type: 全职/实习/兼职/顾问/代发/劳务，空则不限
+    status: 在职/离职归档，空则不限
+    """
+    global roster_manager
+    if roster_manager is None:
+        init_roster()
+
+    results = []
+    for row in roster_manager.data[1:]:
+        wt = roster_manager._get_field(row, "工作类型")
+        st = roster_manager._get_field(row, "工作状态")
+        name = roster_manager._get_field(row, "姓名") or roster_manager._get_field(row, "人员")
+        if not name:
+            continue
+        if work_type and work_type not in wt:
+            continue
+        if status and status not in st:
+            continue
+        pos = roster_manager._get_field(row, "合同职务")
+        manager = roster_manager._get_field(row, "+1")
+        results.append({
+            "姓名": name,
+            "工作类型": wt,
+            "职务": pos,
+            "工作状态": st,
+            "汇报给": manager,
+        })
+
+    if not results:
+        desc = f"{work_type or '全部'}类型" + (f"/{status}" if status else "")
+        return f"没有找到符合条件的人员（{desc}）"
+
+    type_desc = work_type or "全部"
+    status_desc = f"（{status}）" if status else ""
+    lines = [f"【{type_desc}人员{status_desc}，共 {len(results)} 人】"]
+    for p in results:
+        line = f"• {p['姓名']}"
+        if p['职务']:
+            line += f" | {p['职务']}"
+        if p['汇报给']:
+            line += f" | 汇报给 {p['汇报给']}"
+        lines.append(line)
+    return "\n".join(lines)
+
+def get_roster_stats() -> str:
+    """获取名册统计"""
+    global roster_manager
+    if roster_manager is None:
+        init_roster()
     
     stats = roster_manager.get_statistics()
     lines = ["【人员统计】"]
