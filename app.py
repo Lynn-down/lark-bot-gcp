@@ -346,7 +346,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "update_member",
-            "description": "更新名册中某成员的字段值并持久化保存。当用户说"张三换岗了"、"李四薪资调整为X"、"王五离职了"等，调用此工具更新信息。",
+            "description": '更新名册中某成员的字段值并持久化保存。当用户说"张三换岗了"、"李四薪资调整为X"、"王五离职了"等，调用此工具更新信息。',
             "parameters": {
                 "type": "object",
                 "properties": {
