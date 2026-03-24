@@ -51,6 +51,10 @@ HR_USER_IDS = ["946d1fc5", "9ddfdb23", "9bbc73b9", "triplet", "dc84a3bd"]  # 946
 _pending_contracts: Dict[str, Dict] = {}
 _pending_lock = threading.Lock()
 
+# 待处理离职状态（多轮追问）
+_pending_offboardings: Dict[str, Dict] = {}
+_pending_offboarding_lock = threading.Lock()
+
 # 飞书配置
 ENCRYPT_KEY = os.environ.get("LARK_ENCRYPT_KEY", "")
 VERIFICATION_TOKEN = os.environ.get("LARK_VERIFICATION_TOKEN", "")
@@ -432,11 +436,34 @@ def process_message(user_message: str, user_id: str, sender_name: str,
         pending = _pending_contracts.get(user_id)
 
     if pending and not any(kw in user_message for kw in ["合同", "劳动合同", "劳务合同", "实习合同"]):
-        # 把用户的补充内容合并到原始消息再重新处理
-        merged = pending["original"] + " " + user_message
-        with _pending_lock:
-            _pending_contracts.pop(user_id, None)
-        return handle_contract(merged, user_id, chat_id, msg_id)
+        # 已生成过的合同：只在用户明确要求更新时才重新生成
+        if pending.get("generated"):
+            _update_kws = ["改", "换", "更新", "重新生成", "重新出", "把", "改成", "换成",
+                           "加进", "加上", "修改", "调整"]
+            if not any(kw in user_message for kw in _update_kws):
+                # 不是更新请求，不拦截
+                pass
+            else:
+                merged = pending["original"] + " " + user_message
+                with _pending_lock:
+                    _pending_contracts.pop(user_id, None)
+                return handle_contract(merged, user_id, chat_id, msg_id)
+        else:
+            # 尚未生成过：把补充内容合并后重新处理
+            merged = pending["original"] + " " + user_message
+            with _pending_lock:
+                _pending_contracts.pop(user_id, None)
+            return handle_contract(merged, user_id, chat_id, msg_id)
+
+    # ── 离职追问状态 ──
+    with _pending_offboarding_lock:
+        _has_pending_ob = user_id in _pending_offboardings
+    if _has_pending_ob:
+        _unrelated = ["合同", "查一下", "多少人", "统计", "薪资"]
+        if not any(kw in user_message for kw in _unrelated):
+            result = _continue_offboarding(user_message, user_id, chat_id, msg_id)
+            if result is not None:
+                return result
 
     # 合同生成（仅HR）
     # 排除纯能力询问："能出合同吗"、"还能出合同吗"、"你会合同吗" 等 → 交给 LLM 回答
@@ -548,9 +575,13 @@ def handle_contract(user_message: str, user_id: str = "",
                 f"还需要以下信息，补充后我马上生成：\n"
                 + "\n".join(f"  • {m}" for m in missing))
 
-    # 清除待处理状态
+    # 字段齐全，保留 pending（含已提取字段），方便事后更新
     with _pending_lock:
-        _pending_contracts.pop(user_id, None)
+        _pending_contracts[user_id] = {
+            "original": user_message,
+            "contract_type": contract_type,
+            "generated": True,   # 标记已生成过，可接受更新
+        }
 
     name = fields["name"]
 
@@ -611,8 +642,248 @@ def handle_contract(user_message: str, user_id: str = "",
 
 # ─── 离职流程 ────────────────────────────────────────────────────────────────
 
-JUNHAO_USER_ID = "dc84a3bd"   # 陆俊豪
-LYNN_USER_ID   = "946d1fc5"   # 蒋雨萱（邮件发送失败时私信她）
+LYNN_USER_ID = "946d1fc5"   # 蒋雨萱（Lark权限通知 + 邮件fallback）
+
+_OFFBOARDING_EXTRACT_PROMPT = (
+    "从用户消息中提取离职相关字段，只返回纯 JSON，不加任何解释。\n"
+    "可提取字段：\n"
+    "  name          离职员工姓名\n"
+    "  leave_date    最后工作日 YYYY-MM-DD\n"
+    "  start_date    入职日期 YYYY-MM-DD\n"
+    "  job_title     职务/岗位\n"
+    "  id_number     身份证号（18位）\n"
+    "  phone         联系电话\n"
+    "  compensation  经济补偿金，如'100000'/'无'/'10万'（仅正职）\n"
+    "  gender        性别（男/女）\n"
+    "未明确提及的字段不要输出。"
+)
+
+
+def _extract_offboarding_fields(user_message: str) -> dict:
+    """LLM提取离职相关字段"""
+    messages = [
+        {"role": "system", "content": _OFFBOARDING_EXTRACT_PROMPT},
+        {"role": "user",   "content": user_message},
+    ]
+    try:
+        resp    = llm_client_v2._call_api(messages, tools=None, temperature=0)
+        content = resp["choices"][0]["message"].get("content", "")
+        content = re.sub(r'^```(?:json)?\s*', '', content.strip())
+        content = re.sub(r'\s*```$', '', content)
+        return json.loads(content)
+    except Exception as e:
+        logger.error(f"Offboarding field extraction failed: {e}")
+        fields = {}
+        m = re.search(r'(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})', user_message)
+        if m:
+            fields["leave_date"] = (
+                f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+            )
+        return fields
+
+
+def _check_offboarding_missing(fields: dict) -> list:
+    """返回正职离职缺失的必填字段列表（含说明）"""
+    missing = []
+    if not fields.get("start_date"):
+        missing.append("入职日期（如：2025年3月1日）")
+    if not fields.get("job_title"):
+        missing.append("职务/岗位名称")
+    if "compensation" not in fields:
+        missing.append('经济补偿金（有的话告知金额，没有回复"无"）')
+    return missing
+
+
+def _enrich_from_roster(name: str, fields: dict) -> tuple:
+    """从名册补充字段，返回 (work_type, emp_email)"""
+    from roster_module import roster_manager as _rm
+    person    = _rm.query_by_name(name) if _rm else None
+    work_type = ""
+    emp_email = ""
+    if person:
+        work_type = person.get("工作类型", "")
+        emp_email = person.get("邮箱", "")
+        for roster_key, field_key in [
+            ("开始日期",           "start_date"),
+            ("合同职务",           "job_title"),
+            ("身份证号",           "id_number"),
+            ("部门",               "department"),
+        ]:
+            if not fields.get(field_key):
+                fields[field_key] = person.get(roster_key, "")
+        if not fields.get("phone"):
+            fields["phone"] = (person.get("手机号", "") or
+                               person.get("收款银行预留手机号", ""))
+    return work_type, emp_email
+
+
+def _do_offboarding_bg(fields: dict, is_intern: bool,
+                        emp_email: str, chat_id: str, msg_id: str):
+    """后台生成离职文件、发邮件、通知蒋雨萱"""
+    from offboarding_generator import _fmt_cn
+    name     = fields.get("name", "")
+    leave_cn = _fmt_cn(fields.get("leave_date", ""))
+
+    def _bg():
+        try:
+            # ① 正职：生成协议 + 证明
+            if not is_intern:
+                try:
+                    ag_path   = generate_termination_agreement(fields, output_name=name)
+                    cert_path = generate_resignation_certificate(fields, output_name=name)
+                    if chat_id:
+                        send_file_to_chat(chat_id, ag_path,   f"{name}-离职协议.docx")
+                        send_file_to_chat(chat_id, cert_path, f"{name}-离职证明.docx")
+                except Exception as e:
+                    logger.error(f"Offboarding doc error: {e}", exc_info=True)
+                    if chat_id:
+                        reply_text(chat_id, f"⚠️ 文档生成出错：{str(e)[:120]}")
+
+            # ② 离职邮件
+            subject, body = build_offboarding_email(fields)
+            if emp_email:
+                result = send_plain_email(emp_email, subject, body)
+                if result["success"]:
+                    if chat_id:
+                        reply_text(chat_id, f"✅ 离职通知邮件已发送至 {emp_email}")
+                else:
+                    logger.warning(f"Email failed: {result['message']}")
+                    _fallback_dm_lynn(name, subject, body)
+            else:
+                _fallback_dm_lynn(name, subject, body)
+
+            # ③ 通知蒋雨萱关闭 Lark 权限
+            send_dm_to_user(
+                LYNN_USER_ID,
+                f"提醒：{name} 最后工作日是 {leave_cn}，"
+                f"记得到时候及时关闭 ta 的 Lark 权限哦 👌"
+            )
+        except Exception as e:
+            logger.error(f"Offboarding bg error: {e}", exc_info=True)
+            if chat_id:
+                reply_text(chat_id, f"❌ 离职流程出错：{str(e)[:100]}")
+
+    threading.Thread(target=_bg, daemon=True).start()
+
+
+def handle_offboarding(user_message: str, user_id: str = "",
+                       chat_id: str = "", msg_id: str = "") -> str:
+    """处理离职请求（HR专属）。信息不全时追问，齐全后再生成。"""
+    fields     = _extract_offboarding_fields(user_message)
+    name       = fields.get("name", "")
+    leave_date = fields.get("leave_date", "")
+
+    if not name:
+        return "请告诉我是谁要离职 😮"
+    if not leave_date:
+        # 保存不完整 pending，等下条消息补充
+        with _pending_offboarding_lock:
+            _pending_offboardings[user_id] = {
+                "fields": {"name": name},
+                "chat_id": chat_id, "msg_id": msg_id,
+            }
+        return f"收到，{name} 要离职——最后工作日是哪天？"
+
+    work_type, emp_email = _enrich_from_roster(name, fields)
+    fields["_work_type"] = work_type
+    fields["_emp_email"] = emp_email
+    is_intern = "实习" in work_type
+
+    if is_intern:
+        # 实习生只需 name + leave_date，直接生成
+        _do_offboarding_bg(fields, True, emp_email, chat_id, msg_id)
+        return (f"收到 **{name}**（实习生）离职申请 ✅\n"
+                f"正在处理，稍后发到此对话 📄")
+
+    # 正职：检查缺失字段
+    missing = _check_offboarding_missing(fields)
+    with _pending_offboarding_lock:
+        _pending_offboardings[user_id] = {
+            "fields": fields,
+            "is_intern": False,
+            "chat_id": chat_id, "msg_id": msg_id,
+        }
+    if missing:
+        from offboarding_generator import _fmt_cn
+        return (
+            f"收到 **{name}**（正职）离职申请 ✅  最后工作日：{_fmt_cn(leave_date)}\n\n"
+            f"还需要以下信息才能生成协议和证明，补充后我立刻处理：\n"
+            + "\n".join(f"  • {m}" for m in missing)
+        )
+    else:
+        # 信息已齐，生成
+        with _pending_offboarding_lock:
+            _pending_offboardings.pop(user_id, None)
+        _do_offboarding_bg(fields, False, emp_email, chat_id, msg_id)
+        return (f"收到 **{name}**（正职）离职申请 ✅\n"
+                f"正在生成材料，稍后发到此对话 📄")
+
+
+def _continue_offboarding(user_message: str, user_id: str,
+                           chat_id: str, msg_id: str) -> str:
+    """处理离职多轮追问中的补充/更新信息"""
+    with _pending_offboarding_lock:
+        state = _pending_offboardings.get(user_id)
+    if not state:
+        return None
+
+    new_fields = _extract_offboarding_fields(user_message)
+    # "无补偿"系列口语
+    if any(kw in user_message for kw in
+           ["无补偿", "无经济补偿", "不补偿", "没有补偿", "不需要补偿", "补偿为0", "补偿0"]):
+        new_fields["compensation"] = "无"
+
+    # 合并：新字段覆盖旧值
+    state["fields"].update({k: v for k, v in new_fields.items() if v})
+    fields = state["fields"]
+    name   = fields.get("name", "")
+
+    # 若之前还没有 leave_date（name-only pending）
+    if not fields.get("leave_date"):
+        return f"最后工作日是哪天？"
+
+    # 补充 roster 信息（如还没补过）
+    if "_work_type" not in fields:
+        work_type, emp_email = _enrich_from_roster(name, fields)
+        fields["_work_type"] = work_type
+        fields["_emp_email"] = emp_email
+        state["is_intern"] = "实习" in work_type
+
+    is_intern = state.get("is_intern", False)
+    emp_email = fields.get("_emp_email", "")
+
+    if is_intern:
+        with _pending_offboarding_lock:
+            _pending_offboardings.pop(user_id, None)
+        _do_offboarding_bg(fields, True, emp_email,
+                           state["chat_id"], state["msg_id"])
+        return f"信息齐了，正在处理 {name} 的离职，稍后发到此对话 📄"
+
+    missing = _check_offboarding_missing(fields)
+    if missing:
+        return (
+            "收到补充，还差：\n"
+            + "\n".join(f"  • {m}" for m in missing)
+        )
+
+    # 全部齐了，生成
+    with _pending_offboarding_lock:
+        _pending_offboardings.pop(user_id, None)
+    _do_offboarding_bg(fields, False, emp_email,
+                       state["chat_id"], state["msg_id"])
+    return f"信息齐了，正在生成 {name} 的离职材料，稍后发到此对话 📄"
+
+
+def _fallback_dm_lynn(name: str, subject: str, body: str):
+    """无法发邮件时把邮件内容私信蒋雨萱"""
+    text = (
+        f"📧 {name} 的离职通知邮件（未找到邮箱，请手动发送）\n\n"
+        f"主题：{subject}\n\n{body}"
+    )
+    send_dm_to_user(LYNN_USER_ID, text)
+
+
+# ============ 飞书事件处理 ============
 
 
 def _extract_offboarding_fields(user_message: str) -> dict:
