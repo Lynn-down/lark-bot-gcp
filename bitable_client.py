@@ -104,6 +104,7 @@ class BitableClient:
 
         app_token = self.get_app_token()
         records, page_token = [], ""
+        success = False
 
         while True:
             params: dict = {"page_size": 100}
@@ -126,16 +127,20 @@ class BitableClient:
                 items = data.get("data", {}).get("items", [])
                 records.extend(items)
                 if not data["data"].get("has_more"):
+                    success = True
                     break
                 page_token = data["data"].get("page_token", "")
             except Exception as e:
                 logger.error(f"[Bitable] list_records error: {e}")
                 break
 
-        self._cache = records
-        self._cache_ts = time.time()
-        logger.info(f"[Bitable] loaded {len(records)} records")
-        return records
+        if success:
+            self._cache = records
+            self._cache_ts = time.time()
+            logger.info(f"[Bitable] loaded {len(records)} records")
+        elif self._cache:
+            logger.warning("[Bitable] fetch failed, returning stale cache")
+        return self._cache if self._cache else records
 
     def search_by_name(self, name: str) -> List[Dict]:
         """按姓名模糊搜索"""
@@ -158,15 +163,9 @@ class BitableClient:
             if v:
                 lines.append(f"  {f}：{v}")
         for lf in _LINK_FIELDS:
-            raw = fields.get(lf)
-            if raw:
-                url = ""
-                if isinstance(raw, dict):
-                    url = raw.get("link") or raw.get("text") or ""
-                else:
-                    url = str(raw)
-                if url:
-                    lines.append(f"  {lf}：{url}")
+            v = _val(fields.get(lf))
+            if v:
+                lines.append(f"  {lf}：{v}")
         return "\n".join(lines)
 
     def summary_list(self) -> str:

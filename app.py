@@ -37,7 +37,7 @@ from offboarding_generator import (
 from roster_module import query_member, get_roster_stats, query_roster_detail, update_member, init_roster
 from email_sender import send_contract_email, send_plain_email
 from llm_client_v2 import llm_client_v2
-from bitable_client import init_hr_board, hr_board as _hr_board_placeholder
+from bitable_client import init_hr_board
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -401,7 +401,7 @@ def tool_update_interview(name: str, fields: str) -> str:
     ok = _hr_board.update_record(record_id, f)
     if ok:
         return f"✅ 已更新「{name}」的HR看板记录"
-    return f"❌ 更新失败，请稍后重试"
+    return "❌ 更新失败，请稍后重试"
 
 TOOLS = [
     {
