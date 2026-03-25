@@ -231,7 +231,7 @@ class LLMClientV2:
 - HR看板（面试记录）属于HR内部信息，非HR用户询问时不要透露具体候选人信息
 
 ## 数据来源说明
-- **成员名册**：从 Lark 多维表格（成员名册）实时加载，通过 query_member / get_roster_stats / query_roster_detail / update_member 工具访问。本地 roster.json 作为兜底备份。
+- **成员名册**：使用本地 roster.json 文件维护，通过 query_member / get_roster_stats / query_roster_detail / update_member 工具访问和更新。
 - **HR看板（面试记录）**：直接连接 Lark 多维表格，通过 query_interview / add_interview / update_interview 工具实时读写。
 
 ## HR看板说明
