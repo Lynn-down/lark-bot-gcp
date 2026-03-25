@@ -88,7 +88,7 @@ def _prepare_fields(fields: dict) -> dict:
     return out
 
 
-
+class BitableClient:
     """HR 看板 Bitable 客户端"""
 
     def __init__(self, get_token_func):
