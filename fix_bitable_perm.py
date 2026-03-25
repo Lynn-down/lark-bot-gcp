@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-修复 Bitable 写入权限 - 通过 Drive API 给 bot 加 editor
-运行方式：.venv/bin/python fix_bitable_perm.py
+修复 Bitable 写入权限
+策略：把组织内链接权限改为「可编辑」，这样 bot 的 tenant_access_token 就有写权限
 """
 import os, requests
 from dotenv import load_dotenv
 load_dotenv()
 
-APP_ID     = os.environ["LARK_APP_ID"]
-APP_SECRET = os.environ["LARK_APP_SECRET"]
-BASE       = "https://open.larksuite.com/open-apis"
-APP_TOKEN  = "OlXRbRKn1a5hyOsJ10Ml7oF4g3Y"   # 真实 bitable app_token
-TABLE_ID   = "tblBJz4F3owR3gOB"
-BOT_OPEN_ID = "ou_bf1b5942e692731fd47e364343e44587"
+APP_ID      = os.environ["LARK_APP_ID"]
+APP_SECRET  = os.environ["LARK_APP_SECRET"]
+BASE        = "https://open.larksuite.com/open-apis"
+APP_TOKEN   = "OlXRbRKn1a5hyOsJ10Ml7oF4g3Y"
+TABLE_ID    = "tblBJz4F3owR3gOB"
 
 def get_tok():
     r = requests.post(f"{BASE}/auth/v3/tenant_access_token/internal",
@@ -29,31 +28,32 @@ def write_test(tok):
         rid = d["data"]["record"]["record_id"]
         requests.delete(f"{BASE}/bitable/v1/apps/{APP_TOKEN}/tables/{TABLE_ID}/records/{rid}",
                         headers={"Authorization": f"Bearer {tok}"}, timeout=10)
-        return "OK (test record deleted)"
+        return "OK write works"
     return f"FAIL {d}"
 
 tok = get_tok()
 
-# 尝试各种 Drive API 参数组合
-combos = [
-    {"type": "user",       "member_type": "openid",  "member_id": BOT_OPEN_ID, "perm": "edit"},
-    {"type": "openid",     "member_id": BOT_OPEN_ID, "perm": "edit"},
-    {"type": "user",       "member_id": BOT_OPEN_ID, "perm": "edit"},
-]
+print("=== 1. 查询当前公开权限设置 ===")
+r = requests.get(
+    f"{BASE}/drive/v1/permissions/{APP_TOKEN}/public",
+    params={"token_type": "bitable"},
+    headers={"Authorization": f"Bearer {tok}"}, timeout=10)
+print(r.json())
 
-print("=== Drive API 参数组合尝试 ===")
-for i, body in enumerate(combos, 1):
-    r = requests.post(
-        f"{BASE}/drive/v1/permissions/{APP_TOKEN}/members",
-        params={"token_type": "bitable", "need_notification": "false"},
+print("\n=== 2. 尝试将组织内链接改为「可编辑」===")
+# link_share_entity 可能的值：
+# tenant_editable / anyone_editable / tenant_readable / closed
+for val in ["tenant_editable", "tenant_can_edit", "edit"]:
+    r = requests.patch(
+        f"{BASE}/drive/v1/permissions/{APP_TOKEN}/public",
+        params={"token_type": "bitable"},
         headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
-        json=body, timeout=10)
+        json={"link_share_entity": val}, timeout=10)
     d = r.json()
-    print(f"[{i}] body={body}")
-    print(f"    result={d}")
+    print(f"  link_share_entity={val!r}: {d}")
     if d.get("code") == 0:
-        print("    *** SUCCESS ***")
+        print("  *** 成功 ***")
         break
 
-print("\n=== 写入测试 ===")
+print("\n=== 3. 写入测试 ===")
 print(write_test(tok))
