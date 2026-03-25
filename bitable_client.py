@@ -1,0 +1,241 @@
+"""
+bitable_client.py - Lark Bitable HR看板 客户端
+支持：查询面试记录、新增记录、更新字段
+"""
+import logging
+import requests
+import time
+from datetime import datetime
+from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+# 国际版 open API base（Bitable 必须用 larksuite）
+LARK_OPEN_BASE = "https://open.larksuite.com/open-apis"
+
+# HR 看板配置（从 URL 提取）
+HR_BOARD_WIKI_TOKEN = "LUI3wLWbliXDy9kWx4MlW0KvgXs"
+HR_BOARD_TABLE_ID   = "tblBJz4F3owR3gOB"
+HR_BOARD_VIEW_ID    = "vewSBm7mk4"
+
+# 字段展示顺序
+_FIELD_ORDER = ["面试岗位", "岗位性质", "办公方式", "一面日期", "状态", "结果", "备注"]
+_LINK_FIELDS = ["视频链接", "记录链接"]
+
+
+def _val(raw) -> str:
+    """把 Bitable 各种类型的字段值转为可读字符串"""
+    if raw is None:
+        return ""
+    if isinstance(raw, list):
+        parts = []
+        for item in raw:
+            if isinstance(item, dict):
+                parts.append(item.get("text") or item.get("name") or str(item))
+            else:
+                parts.append(str(item))
+        return "、".join(p for p in parts if p)
+    if isinstance(raw, dict):
+        return raw.get("text") or raw.get("link") or raw.get("name") or str(raw)
+    if isinstance(raw, (int, float)) and raw > 1_000_000_000_000:
+        # 时间戳（ms）
+        try:
+            return datetime.fromtimestamp(raw / 1000).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            pass
+    return str(raw)
+
+
+class BitableClient:
+    """HR 看板 Bitable 客户端"""
+
+    def __init__(self, get_token_func):
+        self.get_token = get_token_func
+        self._app_token: Optional[str] = None
+        self._cache: List[Dict] = []
+        self._cache_ts: float = 0
+        self._cache_ttl: int = 300  # 5 分钟
+
+    # ── 内部工具 ──────────────────────────────────────────────────────────────
+
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self.get_token()}",
+            "Content-Type": "application/json",
+        }
+
+    def get_app_token(self) -> str:
+        """通过 wiki token 解析真实的 bitable app_token"""
+        if self._app_token:
+            return self._app_token
+        try:
+            resp = requests.get(
+                f"{LARK_OPEN_BASE}/wiki/v2/spaces/get_node",
+                headers=self._headers(),
+                params={"token": HR_BOARD_WIKI_TOKEN},
+                timeout=10,
+            )
+            data = resp.json()
+            logger.info(f"[Bitable] wiki node: code={data.get('code')} "
+                        f"obj_type={data.get('data',{}).get('node',{}).get('obj_type')}")
+            if data.get("code") == 0:
+                node = data["data"]["node"]
+                token = node.get("obj_token", "")
+                if token:
+                    self._app_token = token
+                    return self._app_token
+        except Exception as e:
+            logger.error(f"[Bitable] get_app_token error: {e}")
+        # fallback：直接用 wiki token 当 app_token
+        self._app_token = HR_BOARD_WIKI_TOKEN
+        logger.warning(f"[Bitable] Using wiki token as app_token (fallback)")
+        return self._app_token
+
+    def _invalidate_cache(self):
+        self._cache = []
+        self._cache_ts = 0
+
+    # ── 读取 ──────────────────────────────────────────────────────────────────
+
+    def get_all_records(self, force: bool = False) -> List[Dict]:
+        """获取所有记录（带 5 分钟缓存）"""
+        if not force and self._cache and time.time() - self._cache_ts < self._cache_ttl:
+            return self._cache
+
+        app_token = self.get_app_token()
+        records, page_token = [], ""
+
+        while True:
+            params: dict = {"page_size": 100}
+            if HR_BOARD_VIEW_ID:
+                params["view_id"] = HR_BOARD_VIEW_ID
+            if page_token:
+                params["page_token"] = page_token
+            try:
+                resp = requests.get(
+                    f"{LARK_OPEN_BASE}/bitable/v1/apps/{app_token}"
+                    f"/tables/{HR_BOARD_TABLE_ID}/records",
+                    headers=self._headers(),
+                    params=params,
+                    timeout=15,
+                )
+                data = resp.json()
+                if data.get("code") != 0:
+                    logger.error(f"[Bitable] list_records failed: {data}")
+                    break
+                items = data.get("data", {}).get("items", [])
+                records.extend(items)
+                if not data["data"].get("has_more"):
+                    break
+                page_token = data["data"].get("page_token", "")
+            except Exception as e:
+                logger.error(f"[Bitable] list_records error: {e}")
+                break
+
+        self._cache = records
+        self._cache_ts = time.time()
+        logger.info(f"[Bitable] loaded {len(records)} records")
+        return records
+
+    def search_by_name(self, name: str) -> List[Dict]:
+        """按姓名模糊搜索"""
+        name_q = name.strip().lower()
+        results = []
+        for rec in self.get_all_records():
+            raw = rec.get("fields", {}).get("姓名", "")
+            rec_name = _val(raw).lower()
+            if rec_name and (name_q in rec_name or rec_name in name_q):
+                results.append(rec)
+        return results
+
+    def format_record(self, rec: Dict) -> str:
+        """格式化单条记录为可读文本"""
+        fields = rec.get("fields", {})
+        name = _val(fields.get("姓名", "")) or "未知"
+        lines = [f"**{name}**"]
+        for f in _FIELD_ORDER:
+            v = _val(fields.get(f, ""))
+            if v:
+                lines.append(f"  {f}：{v}")
+        for lf in _LINK_FIELDS:
+            raw = fields.get(lf)
+            if raw:
+                url = ""
+                if isinstance(raw, dict):
+                    url = raw.get("link") or raw.get("text") or ""
+                else:
+                    url = str(raw)
+                if url:
+                    lines.append(f"  {lf}：{url}")
+        return "\n".join(lines)
+
+    def summary_list(self) -> str:
+        """返回所有候选人的概览列表"""
+        records = self.get_all_records()
+        if not records:
+            return "HR看板暂无记录"
+        lines = [f"HR看板共 **{len(records)}** 条记录："]
+        for rec in records:
+            f = rec.get("fields", {})
+            name     = _val(f.get("姓名", ""))
+            position = _val(f.get("面试岗位", ""))
+            status   = _val(f.get("状态", ""))
+            result   = _val(f.get("结果", ""))
+            parts = [x for x in [position, status, result] if x]
+            lines.append(f"• {name}" + (f" | {' / '.join(parts)}" if parts else ""))
+        return "\n".join(lines)
+
+    # ── 写入 ──────────────────────────────────────────────────────────────────
+
+    def create_record(self, fields: dict) -> Optional[str]:
+        """新增一条记录，返回 record_id"""
+        app_token = self.get_app_token()
+        try:
+            resp = requests.post(
+                f"{LARK_OPEN_BASE}/bitable/v1/apps/{app_token}"
+                f"/tables/{HR_BOARD_TABLE_ID}/records",
+                headers=self._headers(),
+                json={"fields": fields},
+                timeout=15,
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                rid = data["data"]["record"]["record_id"]
+                self._invalidate_cache()
+                logger.info(f"[Bitable] created record {rid}")
+                return rid
+            logger.error(f"[Bitable] create_record failed: {data}")
+        except Exception as e:
+            logger.error(f"[Bitable] create_record error: {e}")
+        return None
+
+    def update_record(self, record_id: str, fields: dict) -> bool:
+        """更新指定记录的字段"""
+        app_token = self.get_app_token()
+        try:
+            resp = requests.put(
+                f"{LARK_OPEN_BASE}/bitable/v1/apps/{app_token}"
+                f"/tables/{HR_BOARD_TABLE_ID}/records/{record_id}",
+                headers=self._headers(),
+                json={"fields": fields},
+                timeout=15,
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                self._invalidate_cache()
+                return True
+            logger.error(f"[Bitable] update_record failed: {data}")
+        except Exception as e:
+            logger.error(f"[Bitable] update_record error: {e}")
+        return False
+
+
+# ── 全局实例 ──────────────────────────────────────────────────────────────────
+
+hr_board: Optional[BitableClient] = None
+
+
+def init_hr_board(get_token_func) -> BitableClient:
+    global hr_board
+    hr_board = BitableClient(get_token_func)
+    return hr_board

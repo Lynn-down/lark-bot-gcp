@@ -37,6 +37,7 @@ from offboarding_generator import (
 from roster_module import query_member, get_roster_stats, query_roster_detail, update_member, init_roster
 from email_sender import send_contract_email, send_plain_email
 from llm_client_v2 import llm_client_v2
+from bitable_client import init_hr_board, hr_board as _hr_board_placeholder
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -64,6 +65,9 @@ OPEN_API_BASE = "https://open.feishu.cn/open-apis"
 
 # 初始化名册
 init_roster()
+
+# 初始化 HR 看板 Bitable（国际版 larksuite）
+_hr_board = init_hr_board(get_access_token)
 
 # 消息去重
 _MAX_PROCESSED = 5000
@@ -355,6 +359,49 @@ def tool_query_roster_detail(work_type: str = "", status: str = "在职") -> str
 def tool_update_member(name: str, field: str, value: str) -> str:
     return update_member(name=name, field=field, value=value)
 
+# ── HR 看板工具 ────────────────────────────────────────────────────────────────
+
+def tool_query_interview(name: str = "", summary: bool = False) -> str:
+    """查询 HR 看板面试记录"""
+    if not _hr_board:
+        return "HR看板暂不可用"
+    if summary or not name:
+        return _hr_board.summary_list()
+    results = _hr_board.search_by_name(name)
+    if not results:
+        return f"HR看板中未找到与「{name}」相关的记录"
+    return "\n\n".join(_hr_board.format_record(r) for r in results)
+
+def tool_add_interview(fields: str) -> str:
+    """新增一条面试记录到 HR 看板（fields 为 JSON 字符串）"""
+    if not _hr_board:
+        return "HR看板暂不可用"
+    try:
+        f = json.loads(fields) if isinstance(fields, str) else fields
+    except Exception:
+        return "字段格式错误，请传入 JSON"
+    rid = _hr_board.create_record(f)
+    if rid:
+        return f"✅ 已在HR看板新增记录（ID: {rid}）"
+    return "❌ 新增记录失败，请检查字段或稍后重试"
+
+def tool_update_interview(name: str, fields: str) -> str:
+    """更新 HR 看板中某候选人的记录（fields 为 JSON 字符串）"""
+    if not _hr_board:
+        return "HR看板暂不可用"
+    records = _hr_board.search_by_name(name)
+    if not records:
+        return f"HR看板中未找到「{name}」的记录"
+    try:
+        f = json.loads(fields) if isinstance(fields, str) else fields
+    except Exception:
+        return "字段格式错误，请传入 JSON"
+    record_id = records[0]["record_id"]
+    ok = _hr_board.update_record(record_id, f)
+    if ok:
+        return f"✅ 已更新「{name}」的HR看板记录"
+    return f"❌ 更新失败，请稍后重试"
+
 TOOLS = [
     {
         "type": "function",
@@ -401,6 +448,49 @@ TOOLS = [
                 "required": ["name", "field", "value"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_interview",
+            "description": "查询HR看板中的面试候选人信息。可按姓名查询某人详情，或不传姓名获取所有候选人概览。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "候选人姓名，不填则返回全部概览"},
+                    "summary": {"type": "boolean", "description": "是否返回概览列表，默认false"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_interview",
+            "description": '在HR看板新增一条面试候选人记录。fields为JSON字符串，可包含：姓名、面试岗位、岗位性质、办公方式、一面日期、状态、视频链接、记录链接、结果、备注。',
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fields": {"type": "string", "description": '候选人信息，JSON格式，如 {"姓名":"张三","面试岗位":"产品经理","状态":"待面试"}'}
+                },
+                "required": ["fields"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_interview",
+            "description": "更新HR看板中某候选人的记录，如更新面试状态、结果、备注等。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "候选人姓名"},
+                    "fields": {"type": "string", "description": '要更新的字段，JSON格式，如 {"状态":"已面试","结果":"通过"}'}
+                },
+                "required": ["name", "fields"]
+            }
+        }
     }
 ]
 
@@ -408,7 +498,10 @@ AVAILABLE_FUNCTIONS = {
     "query_member": tool_query_member,
     "get_roster_stats": tool_get_roster_stats,
     "query_roster_detail": tool_query_roster_detail,
-    "update_member": tool_update_member
+    "update_member": tool_update_member,
+    "query_interview": tool_query_interview,
+    "add_interview": tool_add_interview,
+    "update_interview": tool_update_interview,
 }
 
 
@@ -526,6 +619,9 @@ def process_message(user_message: str, user_id: str, sender_name: str,
         "get_roster_stats": tool_get_roster_stats,
         "query_roster_detail": tool_query_roster_detail,
         "update_member": tool_update_member,
+        "query_interview": tool_query_interview,
+        "add_interview": tool_add_interview,
+        "update_interview": tool_update_interview,
     }
     try:
         return llm_client_v2.chat_with_tools(
