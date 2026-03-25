@@ -10,7 +10,8 @@ load_dotenv()
 APP_ID     = os.environ["LARK_APP_ID"]
 APP_SECRET = os.environ["LARK_APP_SECRET"]
 BASE       = "https://open.larksuite.com/open-apis"
-BITABLE_TOKEN = "Lpbhb302ZaVHmmsmbeCuhqQMsBd"  # 从 URL 取到的 app_token
+WIKI_TOKEN = "LUI3wLWbliXDy9kWx4MlW0KvgXs"
+TABLE_ID   = "tblBJz4F3owR3gOB"
 
 def get_tenant_token():
     r = requests.post(f"{BASE}/auth/v3/tenant_access_token/internal",
@@ -19,52 +20,92 @@ def get_tenant_token():
     assert d["code"] == 0, f"token failed: {d}"
     return d["tenant_access_token"]
 
-def check_app_info(tok):
-    """检查 bitable 基本信息（测试读权限）"""
-    r = requests.get(f"{BASE}/bitable/v1/apps/{BITABLE_TOKEN}",
+def get_bot_info(tok):
+    r = requests.get(f"{BASE}/bot/v3/info",
                      headers={"Authorization": f"Bearer {tok}"}, timeout=10)
-    print("[GET app info]", r.json())
+    return r.json()
 
-def try_grant_via_drive(tok):
-    """通过 Drive 权限 API 给 bot 加编辑权限"""
+def resolve_app_token(tok):
+    r = requests.get(f"{BASE}/wiki/v2/spaces/get_node",
+                     params={"token": WIKI_TOKEN},
+                     headers={"Authorization": f"Bearer {tok}"}, timeout=10)
+    d = r.json()
+    if d.get("code") == 0:
+        return d["data"]["node"].get("obj_token")
+    print(f"  wiki resolve failed: {d}")
+    return None
+
+def list_roles(tok, app_token):
+    r = requests.get(f"{BASE}/bitable/v1/apps/{app_token}/roles",
+                     headers={"Authorization": f"Bearer {tok}"}, timeout=10)
+    return r.json()
+
+def add_to_role(tok, app_token, role_id, open_id):
     r = requests.post(
-        f"{BASE}/drive/v1/permissions/{BITABLE_TOKEN}/members",
+        f"{BASE}/bitable/v1/apps/{app_token}/roles/{role_id}/members",
+        headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
+        json={"member_list": [{"type": "open_id", "id": open_id}]},
+        timeout=10
+    )
+    return r.json()
+
+def try_drive_openid(tok, app_token, open_id):
+    r = requests.post(
+        f"{BASE}/drive/v1/permissions/{app_token}/members",
         params={"token_type": "bitable", "need_notification": "false"},
         headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
-        json={"member_type": "app", "member_id": APP_ID, "perm": "edit"},
+        json={"member_type": "openid", "member_id": open_id, "perm": "edit"},
         timeout=10
     )
-    print("[Drive grant edit]", r.json())
+    return r.json()
 
-def try_write_test(tok):
-    """尝试写一条测试记录（用来判断是否真的有写权限）"""
-    # 先拿 table_id
-    from bitable_client import HR_BOARD_TABLE_ID
+def write_test(tok, app_token):
     r = requests.post(
-        f"{BASE}/bitable/v1/apps/{BITABLE_TOKEN}/tables/{HR_BOARD_TABLE_ID}/records",
+        f"{BASE}/bitable/v1/apps/{app_token}/tables/{TABLE_ID}/records",
         headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
-        json={"fields": {"__test__": "ping"}},
-        timeout=10
+        json={"fields": {"__ping__": "test"}}, timeout=10
     )
     d = r.json()
-    print("[Write test]", d)
-    # 如果成功，立刻删掉测试记录
     if d.get("code") == 0:
         rid = d["data"]["record"]["record_id"]
         requests.delete(
-            f"{BASE}/bitable/v1/apps/{BITABLE_TOKEN}/tables/{HR_BOARD_TABLE_ID}/records/{rid}",
+            f"{BASE}/bitable/v1/apps/{app_token}/tables/{TABLE_ID}/records/{rid}",
             headers={"Authorization": f"Bearer {tok}"}, timeout=10
         )
-        print("  (测试记录已删除)")
+        return "OK write success (test record deleted)"
+    return f"FAIL {d}"
 
+# ── 执行 ─────────────────────────────────────────────────────────────────────
 tok = get_tenant_token()
-print(f"\nApp ID: {APP_ID}\n")
+print(f"App ID: {APP_ID}\n")
 
-print("=== 1. 读取 bitable 信息 ===")
-check_app_info(tok)
+print("=== 1. Bot 信息 ===")
+bot_info = get_bot_info(tok)
+print(bot_info)
+open_id = bot_info.get("bot", {}).get("open_id", "")
+print(f"Bot open_id: {open_id}\n")
 
-print("\n=== 2. 尝试通过 Drive API 授予编辑权限 ===")
-try_grant_via_drive(tok)
+print("=== 2. 解析真实 app_token ===")
+app_token = resolve_app_token(tok)
+print(f"app_token: {app_token}\n")
+if not app_token:
+    exit(1)
 
-print("\n=== 3. 再次尝试写入测试 ===")
-try_write_test(tok)
+print("=== 3. 列出 bitable 角色 ===")
+roles_resp = list_roles(tok, app_token)
+print(roles_resp)
+
+if roles_resp.get("code") == 0 and open_id:
+    items = roles_resp.get("data", {}).get("items", [])
+    print(f"共 {len(items)} 个角色")
+    for role in items:
+        print(f"  {role['role_id']} | {role.get('role_name','')}")
+        res = add_to_role(tok, app_token, role["role_id"], open_id)
+        print(f"  add_to_role result: {res}")
+elif open_id:
+    print("角色列表失败，尝试 Drive openid 方式")
+    dr = try_drive_openid(tok, app_token, open_id)
+    print(f"Drive openid: {dr}")
+
+print("\n=== 4. 写入测试 ===")
+print(write_test(tok, app_token))
