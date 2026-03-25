@@ -24,7 +24,8 @@ ROSTER_TABLE_ID      = "tbl6pInc5Iiipz7R"
 ROSTER_VIEW_ID       = "vewmxmc30u"
 
 # 字段展示顺序（其余字段会追加在后面）
-_FIELD_ORDER = ["面试岗位", "岗位性质", "办公方式", "一面日期", "状态", "结果", "备注"]
+_FIELD_ORDER = ["面试岗位", "岗位性质", "办公方式",
+                "一面日期与时间", "一面状态", "结果", "备注"]
 
 
 def _val(raw) -> str:
@@ -51,7 +52,43 @@ def _val(raw) -> str:
     return str(raw)
 
 
-class BitableClient:
+def _to_ms(val) -> int:
+    """把日期/时间字符串或已有数字转为 Bitable datetime 字段所需的毫秒时间戳（CST UTC+8）"""
+    if isinstance(val, (int, float)):
+        return int(val)
+    s = str(val).strip()
+    for fmt in ("%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M",
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            from datetime import timezone, timedelta
+            dt = datetime.strptime(s, fmt)
+            cst = timezone(timedelta(hours=8))
+            return int(dt.replace(tzinfo=cst).timestamp() * 1000)
+        except ValueError:
+            pass
+    raise ValueError(f"无法解析日期：{val}")
+
+
+# 需要转为毫秒时间戳的字段名（datetime 类型）
+_DATETIME_FIELDS = {"一面日期与时间", "二面日期与时间"}
+
+
+def _prepare_fields(fields: dict) -> dict:
+    """写入前预处理：datetime 字段转毫秒时间戳"""
+    out = {}
+    for k, v in fields.items():
+        if k in _DATETIME_FIELDS and v:
+            try:
+                out[k] = _to_ms(v)
+            except ValueError as e:
+                logger.warning(f"[Bitable] datetime parse failed for {k}={v!r}: {e}")
+                out[k] = v  # 原样传，让 API 报错
+        else:
+            out[k] = v
+    return out
+
+
+
     """HR 看板 Bitable 客户端"""
 
     def __init__(self, get_token_func):
@@ -205,7 +242,7 @@ class BitableClient:
                 f"{LARK_OPEN_BASE}/bitable/v1/apps/{app_token}"
                 f"/tables/{HR_BOARD_TABLE_ID}/records",
                 headers=self._headers(),
-                json={"fields": fields},
+                json={"fields": _prepare_fields(fields)},
                 timeout=15,
             )
             data = resp.json()
@@ -227,7 +264,7 @@ class BitableClient:
                 f"{LARK_OPEN_BASE}/bitable/v1/apps/{app_token}"
                 f"/tables/{HR_BOARD_TABLE_ID}/records/{record_id}",
                 headers=self._headers(),
-                json={"fields": fields},
+                json={"fields": _prepare_fields(fields)},
                 timeout=15,
             )
             data = resp.json()

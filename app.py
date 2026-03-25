@@ -488,7 +488,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "add_interview",
-            "description": '在HR看板新增一条面试候选人记录。fields为JSON字符串，可包含：姓名、面试岗位、岗位性质、办公方式、一面日期、状态、视频链接、记录链接、结果、备注。',
+            "description": '在HR看板新增一条面试候选人记录。fields为JSON字符串，可用字段：姓名、面试岗位、岗位性质、办公方式、一面日期与时间（格式"YYYY-MM-DD HH:MM"）、一面状态、一面视频、一面记录、结果、备注。',
             "parameters": {
                 "type": "object",
                 "properties": {
