@@ -553,7 +553,11 @@ def process_message(user_message: str, user_id: str, sender_name: str,
     with _pending_offboarding_lock:
         _has_pending_ob = user_id in _pending_offboardings
     if _has_pending_ob:
-        _unrelated = ["合同", "查一下", "多少人", "统计", "薪资"]
+        _unrelated = ["合同", "查一下", "多少人", "统计", "薪资",
+                      "名册", "多维表格", "表格", "excel", "Excel",
+                      "你现在", "你用的", "你是用", "你在用",
+                      "哪个", "什么数据", "数据源",
+                      "看板", "面试", "入职", "HR看板"]
         if not any(kw in user_message for kw in _unrelated):
             result = _continue_offboarding(user_message, user_id, chat_id, msg_id)
             if result is not None:

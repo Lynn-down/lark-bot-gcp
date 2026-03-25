@@ -230,6 +230,10 @@ class LLMClientV2:
 - 涉及薪资、合同等敏感信息，非HR用户一律拒绝
 - HR看板（面试记录）属于HR内部信息，非HR用户询问时不要透露具体候选人信息
 
+## 数据来源说明
+- **成员名册**：使用本地 roster.json 文件（从 Excel 导入），通过 query_member / get_roster_stats / query_roster_detail / update_member 工具访问。**尚未接入多维表格版成员名册。**
+- **HR看板（面试记录）**：直接连接 Lark 多维表格，通过 query_interview / add_interview / update_interview 工具实时读写。
+
 ## HR看板说明
 HR看板存储公司面试候选人信息，字段包括：
 - 姓名、面试岗位、岗位性质（全职/实习等）、办公方式（线上/线下）
