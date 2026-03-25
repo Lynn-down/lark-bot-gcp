@@ -18,6 +18,11 @@ HR_BOARD_WIKI_TOKEN = "LUI3wLWbliXDy9kWx4MlW0KvgXs"
 HR_BOARD_TABLE_ID   = "tblBJz4F3owR3gOB"
 HR_BOARD_VIEW_ID    = "vewSBm7mk4"
 
+# 成员名册配置（直接 bitable URL，与 HR 看板同一个 base）
+ROSTER_BITABLE_TOKEN = "Lpbhb302ZaVHmmsmbeCuhqQMsBd"
+ROSTER_TABLE_ID      = "tbl6pInc5Iiipz7R"
+ROSTER_VIEW_ID       = "vewmxmc30u"
+
 # 字段展示顺序（其余字段会追加在后面）
 _FIELD_ORDER = ["面试岗位", "岗位性质", "办公方式", "一面日期", "状态", "结果", "备注"]
 
@@ -243,3 +248,117 @@ def init_hr_board(get_token_func) -> BitableClient:
     global hr_board
     hr_board = BitableClient(get_token_func)
     return hr_board
+
+
+# ── 成员名册 Bitable ──────────────────────────────────────────────────────────
+
+class RosterBitableClient:
+    """成员名册 Bitable 客户端（只读，写入权限待后续开放）"""
+
+    def __init__(self, get_token_func):
+        self.get_token = get_token_func
+        self._cache: List[Dict] = []
+        self._cache_ts: float = 0
+        self._cache_ttl: int = 300
+
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self.get_token()}",
+            "Content-Type": "application/json",
+        }
+
+    def _invalidate_cache(self):
+        self._cache = []
+        self._cache_ts = 0
+
+    def get_all_records(self, force: bool = False) -> List[Dict]:
+        if not force and self._cache and time.time() - self._cache_ts < self._cache_ttl:
+            return self._cache
+
+        records, page_token, success = [], "", False
+        while True:
+            params: dict = {"page_size": 100, "view_id": ROSTER_VIEW_ID}
+            if page_token:
+                params["page_token"] = page_token
+            try:
+                resp = requests.get(
+                    f"{LARK_OPEN_BASE}/bitable/v1/apps/{ROSTER_BITABLE_TOKEN}"
+                    f"/tables/{ROSTER_TABLE_ID}/records",
+                    headers=self._headers(), params=params, timeout=15,
+                )
+                data = resp.json()
+                if data.get("code") != 0:
+                    logger.error(f"[RosterBitable] list failed: {data}")
+                    break
+                records.extend(data.get("data", {}).get("items", []))
+                if not data["data"].get("has_more"):
+                    success = True
+                    break
+                page_token = data["data"].get("page_token", "")
+            except Exception as e:
+                logger.error(f"[RosterBitable] error: {e}")
+                break
+
+        if success:
+            self._cache = records
+            self._cache_ts = time.time()
+            logger.info(f"[RosterBitable] loaded {len(records)} records")
+        elif self._cache:
+            logger.warning("[RosterBitable] fetch failed, using stale cache")
+        return self._cache if self._cache else records
+
+    def to_roster_data(self) -> Optional[List[list]]:
+        """转换为 roster_module 使用的 list-of-lists 格式（第一行为表头）"""
+        records = self.get_all_records()
+        if not records:
+            return None
+        # 收集所有字段名作为表头
+        all_fields: List[str] = []
+        seen = set()
+        for rec in records:
+            for k in rec.get("fields", {}):
+                if k not in seen:
+                    all_fields.append(k)
+                    seen.add(k)
+        result: List[list] = [all_fields]
+        for rec in records:
+            fields = rec.get("fields", {})
+            result.append([_val(fields.get(h, "")) for h in all_fields])
+        return result
+
+    def update_record(self, record_id: str, fields: dict) -> bool:
+        """尝试写入（当前权限可能不足，失败静默返回 False）"""
+        try:
+            resp = requests.put(
+                f"{LARK_OPEN_BASE}/bitable/v1/apps/{ROSTER_BITABLE_TOKEN}"
+                f"/tables/{ROSTER_TABLE_ID}/records/{record_id}",
+                headers=self._headers(),
+                json={"fields": fields},
+                timeout=15,
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                self._invalidate_cache()
+                return True
+            logger.warning(f"[RosterBitable] update failed (no write perm?): {data.get('code')} {data.get('msg')}")
+        except Exception as e:
+            logger.error(f"[RosterBitable] update error: {e}")
+        return False
+
+    def find_record_id(self, name: str) -> Optional[str]:
+        """按姓名找 record_id（用于写入时定位行）"""
+        name_q = name.strip().lower()
+        for rec in self.get_all_records():
+            v = _val(rec.get("fields", {}).get("姓名", "")).lower()
+            if v and (name_q in v or v in name_q):
+                return rec["record_id"]
+        return None
+
+
+roster_bitable: Optional[RosterBitableClient] = None
+
+
+def init_roster_bitable(get_token_func) -> RosterBitableClient:
+    global roster_bitable
+    roster_bitable = RosterBitableClient(get_token_func)
+    return roster_bitable

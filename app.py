@@ -37,7 +37,7 @@ from offboarding_generator import (
 from roster_module import query_member, get_roster_stats, query_roster_detail, update_member, init_roster
 from email_sender import send_contract_email, send_plain_email
 from llm_client_v2 import llm_client_v2
-from bitable_client import init_hr_board
+from bitable_client import init_hr_board, init_roster_bitable
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -100,6 +100,26 @@ def get_access_token() -> str:
 
 # 初始化 HR 看板 Bitable（必须在 get_access_token 定义之后）
 _hr_board = init_hr_board(get_access_token)
+
+# 初始化成员名册 Bitable，加载成功则覆盖 roster.json 数据
+_roster_bitable = init_roster_bitable(get_access_token)
+
+def _refresh_roster_from_bitable():
+    """从 Bitable 成员名册刷新 roster_manager 数据（启动时调用）"""
+    from roster_module import roster_manager
+    try:
+        data = _roster_bitable.to_roster_data()
+        if data and len(data) > 1:
+            roster_manager.data = data
+            roster_manager.headers = data[0]
+            logger.info(f"[RosterBitable] roster_manager refreshed: {len(data)-1} rows from bitable")
+        else:
+            logger.warning("[RosterBitable] empty or unavailable, keeping roster.json")
+    except Exception as e:
+        logger.error(f"[RosterBitable] refresh failed, keeping roster.json: {e}")
+
+import threading as _threading
+_threading.Thread(target=_refresh_roster_from_bitable, daemon=True).start()
 
 
 def is_hr_user(sender_name: str, sender_id: str = "") -> bool:
