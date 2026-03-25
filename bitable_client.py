@@ -40,7 +40,8 @@ def _val(raw) -> str:
                 parts.append(str(item))
         return "、".join(p for p in parts if p)
     if isinstance(raw, dict):
-        return raw.get("text") or raw.get("link") or raw.get("name") or str(raw)
+        # 优先返回 link URL；无 link 时返回 text/name（如人员、选项字段）
+        return raw.get("link") or raw.get("text") or raw.get("name") or str(raw)
     if isinstance(raw, (int, float)) and raw > 1_000_000_000_000:
         # 时间戳（ms）
         try:
