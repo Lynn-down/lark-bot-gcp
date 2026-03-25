@@ -18,9 +18,8 @@ HR_BOARD_WIKI_TOKEN = "LUI3wLWbliXDy9kWx4MlW0KvgXs"
 HR_BOARD_TABLE_ID   = "tblBJz4F3owR3gOB"
 HR_BOARD_VIEW_ID    = "vewSBm7mk4"
 
-# 字段展示顺序
+# 字段展示顺序（其余字段会追加在后面）
 _FIELD_ORDER = ["面试岗位", "岗位性质", "办公方式", "一面日期", "状态", "结果", "备注"]
-_LINK_FIELDS = ["视频链接", "记录链接"]
 
 
 def _val(raw) -> str:
@@ -154,18 +153,24 @@ class BitableClient:
         return results
 
     def format_record(self, rec: Dict) -> str:
-        """格式化单条记录为可读文本"""
+        """格式化单条记录为可读文本（展示所有非空字段）"""
         fields = rec.get("fields", {})
         name = _val(fields.get("姓名", "")) or "未知"
         lines = [f"**{name}**"]
+        shown = {"姓名"}
+        # 优先按预设顺序展示已知字段
         for f in _FIELD_ORDER:
             v = _val(fields.get(f, ""))
             if v:
                 lines.append(f"  {f}：{v}")
-        for lf in _LINK_FIELDS:
-            v = _val(fields.get(lf))
+            shown.add(f)
+        # 展示其余所有非空字段（含实际链接字段，不论名称）
+        for f, raw in fields.items():
+            if f in shown:
+                continue
+            v = _val(raw)
             if v:
-                lines.append(f"  {lf}：{v}")
+                lines.append(f"  {f}：{v}")
         return "\n".join(lines)
 
     def summary_list(self) -> str:
