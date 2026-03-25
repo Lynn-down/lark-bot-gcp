@@ -66,9 +66,6 @@ OPEN_API_BASE = "https://open.feishu.cn/open-apis"
 # 初始化名册
 init_roster()
 
-# 初始化 HR 看板 Bitable（国际版 larksuite）
-_hr_board = init_hr_board(get_access_token)
-
 # 消息去重
 _MAX_PROCESSED = 5000
 _processed_ids: set = set()
@@ -99,6 +96,10 @@ def get_access_token() -> str:
     except Exception as e:
         logger.error(f"Token fetch error: {e}")
     return ""
+
+
+# 初始化 HR 看板 Bitable（必须在 get_access_token 定义之后）
+_hr_board = init_hr_board(get_access_token)
 
 
 def is_hr_user(sender_name: str, sender_id: str = "") -> bool:
