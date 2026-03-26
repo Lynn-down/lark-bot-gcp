@@ -529,21 +529,20 @@ def process_message(user_message: str, user_id: str, sender_name: str,
     with _pending_lock:
         pending = _pending_contracts.get(user_id)
 
-    if pending and not any(kw in user_message for kw in ["合同", "劳动合同", "劳务合同", "实习合同"]):
-        # 已生成过的合同：只在用户明确要求更新时才重新生成
+    if pending:
         if pending.get("generated"):
+            # 已生成过：只在用户明确补充/修改字段时重新生成（不受"合同"关键词限制）
             _update_kws = ["改", "换", "更新", "重新生成", "重新出", "把", "改成", "换成",
-                           "加进", "加上", "修改", "调整"]
-            if not any(kw in user_message for kw in _update_kws):
-                # 不是更新请求，不拦截
-                pass
-            else:
+                           "加进", "加上", "修改", "调整", "入职", "签订", "日期", "薪资",
+                           "地址", "身份证", "电话", "手机", "岗位", "时长"]
+            if any(kw in user_message for kw in _update_kws):
                 merged = pending["original"] + " " + user_message
                 with _pending_lock:
                     _pending_contracts.pop(user_id, None)
                 return handle_contract(merged, user_id, chat_id, msg_id)
-        else:
-            # 尚未生成过：把补充内容合并后重新处理
+            # 不是字段补充，不拦截，继续正常路由
+        elif not any(kw in user_message for kw in ["合同", "劳动合同", "劳务合同", "实习合同"]):
+            # 尚未生成过，且消息里不含"合同"关键词：把补充内容合并后重新处理
             merged = pending["original"] + " " + user_message
             with _pending_lock:
                 _pending_contracts.pop(user_id, None)
@@ -1009,8 +1008,18 @@ def handle_im_message(data) -> None:
             # 移除@机器人
             text = re.sub(r'@\s*\w+\s*', '', text).strip()
         except:
+            body = {}
             text = ""
-        
+
+        # 群聊只响应@提及
+        chat_type = getattr(message, 'chat_type', 'p2p')
+        if chat_type == "group":
+            mentions = body.get("mentions", [])
+            bot_open_id = "ou_bf1b5942e692731fd47e364343e44587"
+            if not any(m.get("id", {}).get("open_id") == bot_open_id for m in mentions):
+                logger.info("Group message without @mention, skipping")
+                return
+
         if not text:
             logger.info("Empty message")
             return
