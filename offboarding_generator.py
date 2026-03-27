@@ -114,6 +114,11 @@ def generate_termination_agreement(fields: dict, output_name: str = None) -> str
     name      = fields.get("name", "")
     id_number = fields.get("id_number", "")
     phone     = fields.get("phone", "")
+    compensation     = str(fields.get("compensation", ""))
+    bank_account_name = fields.get("bank_account_name", name)  # 户名默认为本人姓名
+    bank_name        = fields.get("bank_name", "")
+    bank_account     = fields.get("bank_account", "")
+    bank_branch      = fields.get("bank_branch", "")
 
     def _parse_dt(ds):
         try:
@@ -123,7 +128,6 @@ def generate_termination_agreement(fields: dict, output_name: str = None) -> str
 
     start_dt = _parse_dt(fields.get("start_date", ""))
     leave_dt = _parse_dt(fields.get("leave_date", ""))
-    today    = datetime.now()
 
     for para in doc.paragraphs:
         t = para.text
@@ -162,13 +166,24 @@ def generate_termination_agreement(fields: dict, output_name: str = None) -> str
             if new_t != t:
                 _set_para_text(para, new_t)
 
-        # 签署日期行
-        elif "__________年____月____日" in t:
+        # 甲方签署日期 = 拟解除日期（用户要求）
+        elif "__________年____月____日" in t and leave_dt:
             new_t = t.replace(
                 "__________年____月____日",
-                f"        年{today.month}月{today.day}日",
+                f"{leave_dt.year}年{leave_dt.month}月{leave_dt.day}日",
             )
             _set_para_text(para, new_t)
+
+    # 赔偿金、银行信息、支付期限：整文档替换
+    comp_display = "无" if compensation in ("无", "0", "") else f"{compensation}元"
+    payment_period = fields.get("payment_period", "1个月内")
+    _replace_in_doc(doc, {
+        "（经济补偿金金额）":   comp_display,
+        "（支付期限）":         payment_period,
+        "（户名）":             bank_account_name,
+        "（开户行）":           bank_name or bank_branch,
+        "（账号）":             bank_account,
+    })
 
     fname    = output_name or name
     out_path = os.path.join(OUTPUT_DIR, f"{fname}-离职协议.docx")

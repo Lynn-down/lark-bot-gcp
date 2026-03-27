@@ -659,10 +659,21 @@ def handle_contract(user_message: str, user_id: str = "",
         logger.error(f"Field extraction failed: {e}")
         fields = {}
 
-    # 必填字段校验
-    required = {"name": "姓名", "job_title": "岗位名称", "salary": "薪资"}
-    missing = [cn for k, cn in required.items()
-               if not fields.get(k) or str(fields[k]).strip() in ("", "XXX")]
+    # 必填字段校验（按合同类型）
+    salary_label = "日薪（数字，如：200）" if contract_type == "intern" else "月薪（数字，如：20000）"
+    required = [
+        ("name",              "姓名"),
+        ("sign_date",         "签订日期（如：2026-04-01）"),
+        ("id_number",         "身份证号码（18位）"),
+        ("household_address", "户籍地址"),
+        ("contact_address",   "联系地址"),
+        ("phone",             "联系电话"),
+        ("start_date",        "合同开始日期（如：2026-04-01）"),
+        ("job_title",         "工作岗位"),
+        ("salary",            salary_label),
+    ]
+    missing = [label for key, label in required
+               if not fields.get(key) or str(fields[key]).strip() in ("", "XXX")]
 
     if missing:
         # 保存待处理状态（用于下一条消息的补充）
@@ -685,14 +696,14 @@ def handle_contract(user_message: str, user_id: str = "",
 
     name = fields["name"]
 
-    # 字段摘要（不展示合同内容，只列出提取到的信息）
+    # 字段摘要
     field_labels = {
-        "name": "姓名", "job_title": "岗位名称", "salary": "薪资",
-        "start_date": "入职日期", "duration": "合同时长", "id_number": "身份证号",
-        "address": "联系地址", "hukou_address": "户籍地址",
+        "name": "姓名", "job_title": "岗位", "salary": "薪资",
+        "sign_date": "签订日期", "start_date": "开始日期",
+        "id_number": "身份证号", "contact_address": "联系地址",
+        "household_address": "户籍地址", "phone": "联系电话",
     }
-    summary_lines = [f"📋 合同信息确认："]
-    summary_lines.append(f"  合同类型：{cn_name}")
+    summary_lines = ["📋 合同信息确认：", f"  合同类型：{cn_name}"]
     for k, label in field_labels.items():
         if fields.get(k) and str(fields[k]).strip() not in ("", "XXX"):
             summary_lines.append(f"  {label}：{fields[k]}")
@@ -708,8 +719,13 @@ def handle_contract(user_message: str, user_id: str = "",
                 fields.setdefault("duration", "3")
                 fields.setdefault("duration_unit", "年")
                 fields.setdefault("probation_period", "3")
-            else:
+            elif contract_type == "service":
+                fields.setdefault("duration", "3")
+                fields.setdefault("duration_unit", "年")
+            else:  # intern
+                fields.setdefault("duration", "3")
                 fields.setdefault("duration_unit", "月")
+                fields["salary_type"] = "daily"   # 实习合同用日薪
 
             path = generate_contract(contract_type, fields, output_name=name)
             file_name = f"{name}-{cn_name}.docx"
@@ -747,14 +763,17 @@ LYNN_USER_ID = "946d1fc5"   # 蒋雨萱（Lark权限通知 + 邮件fallback）
 _OFFBOARDING_EXTRACT_PROMPT = (
     "从用户消息中提取离职相关字段，只返回纯 JSON，不加任何解释。\n"
     "可提取字段：\n"
-    "  name          离职员工姓名\n"
-    "  leave_date    最后工作日 YYYY-MM-DD\n"
-    "  start_date    入职日期 YYYY-MM-DD\n"
-    "  job_title     职务/岗位\n"
-    "  id_number     身份证号（18位）\n"
-    "  phone         联系电话\n"
-    "  compensation  经济补偿金，如'100000'/'无'/'10万'（仅正职）\n"
-    "  gender        性别（男/女）\n"
+    "  name              离职员工姓名\n"
+    "  leave_date        拟解除/最后工作日 YYYY-MM-DD\n"
+    "  start_date        入职日期 YYYY-MM-DD\n"
+    "  job_title         职务/岗位\n"
+    "  id_number         身份证号（18位）\n"
+    "  phone             联系电话\n"
+    "  compensation      经济补偿金，如'100000'/'无'（仅正职）\n"
+    "  gender            性别（男/女）\n"
+    "  bank_name         开户行（如：招商银行北京中关村支行）\n"
+    "  bank_account      银行账号\n"
+    "  bank_account_name 户名\n"
     "未明确提及的字段不要输出。"
 )
 
@@ -787,14 +806,28 @@ def _extract_offboarding_fields(user_message: str) -> dict:
 
 
 def _check_offboarding_missing(fields: dict) -> list:
-    """返回正职离职缺失的必填字段列表（含说明）"""
+    """返回正职离职缺失的必填字段列表（含说明）
+    大部分字段已由 _enrich_from_roster 从名册补全，
+    只有 compensation 和 gender 必须向用户询问。
+    其余字段若名册里也没有，才额外追问。
+    """
     missing = []
+    if not fields.get("id_number"):
+        missing.append("身份证号码")
+    if not fields.get("phone"):
+        missing.append("联系电话")
     if not fields.get("start_date"):
         missing.append("入职日期（如：2025年3月1日）")
     if not fields.get("job_title"):
         missing.append("职务/岗位名称")
     if "compensation" not in fields:
         missing.append('经济补偿金（有的话告知金额，没有回复"无"）')
+    if not fields.get("gender"):
+        missing.append("性别（男/女，用于离职证明）")
+    if not fields.get("bank_name"):
+        missing.append("开户行（银行名称及支行）")
+    if not fields.get("bank_account"):
+        missing.append("银行账号")
     return missing
 
 
@@ -808,16 +841,22 @@ def _enrich_from_roster(name: str, fields: dict) -> tuple:
         work_type = person.get("工作类型", "")
         emp_email = person.get("邮箱", "")
         for roster_key, field_key in [
-            ("开始日期",           "start_date"),
-            ("合同职务",           "job_title"),
-            ("身份证号",           "id_number"),
-            ("部门",               "department"),
+            ("开始日期",                "start_date"),
+            ("合同职务",                "job_title"),
+            ("身份证号",                "id_number"),
+            ("部门",                    "department"),
+            ("收款银行",                "bank_name"),
+            ("收款卡号",                "bank_account"),
+            ("收款银行开户所在地址",    "bank_branch"),
         ]:
             if not fields.get(field_key):
                 fields[field_key] = person.get(roster_key, "")
         if not fields.get("phone"):
             fields["phone"] = (person.get("手机号", "") or
                                person.get("收款银行预留手机号", ""))
+        # 户名默认为本人姓名
+        if not fields.get("bank_account_name") and name:
+            fields["bank_account_name"] = name
     return work_type, emp_email
 
 
