@@ -1152,17 +1152,24 @@ def handle_im_message(data) -> None:
         # 群聊只响应@提及
         chat_type = getattr(message, 'chat_type', 'p2p')
         if chat_type == "group":
-            mentions = body.get("mentions", [])
-            if not mentions:
+            # mentions 在 SDK message 对象上，不在 content JSON 里
+            sdk_mentions = getattr(message, 'mentions', None) or []
+            if not sdk_mentions:
                 logger.info("Group message without any @mention, skipping")
                 return
-            # 有 mentions 时，若已拿到 bot open_id 则精确匹配；否则放行所有 @mention
+            # 若已拿到 bot open_id 则精确匹配；否则放行所有 @mention
             if _BOT_OPEN_ID:
-                if not any(m.get("id", {}).get("open_id") == _BOT_OPEN_ID for m in mentions):
-                    logger.info(f"Group @mention not targeting bot ({_BOT_OPEN_ID}), skipping")
+                def _mention_open_id(m):
+                    try:
+                        return (m.id.open_id or "") if hasattr(m, 'id') else m.get("id", {}).get("open_id", "")
+                    except Exception:
+                        return ""
+                if not any(_mention_open_id(m) == _BOT_OPEN_ID for m in sdk_mentions):
+                    logger.info(f"Group @mention not targeting bot, skipping "
+                                f"(mentions={[_mention_open_id(m) for m in sdk_mentions]})")
                     return
             else:
-                logger.info("Bot open_id not yet cached, allowing any @mention in group")
+                logger.info("Bot open_id not yet cached, allowing @mention in group")
 
         if not text:
             logger.info("Empty message")
