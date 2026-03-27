@@ -8,6 +8,7 @@ import os
 import re
 import logging
 from datetime import datetime
+from dateutil.relativedelta import relativedelta
 from docx import Document
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,56 @@ def _fmt_cn(ds: str) -> str:
         return f"{d.year}年{d.month}月{d.day}日"
     except Exception:
         return str(ds)
+
+
+def _num_to_cn(amount_str: str) -> str:
+    """数字金额转中文大写（整数，支持到亿级）"""
+    try:
+        s = re.sub(r'[,，元圆整\s]', '', str(amount_str))
+        amount = int(float(s))
+    except (ValueError, TypeError):
+        return str(amount_str)
+    if amount == 0:
+        return "零元整"
+
+    digits = "零壹贰叁肆伍陆柒捌玖"
+
+    def _four(n: int) -> str:
+        """四位以内数字转大写（不含末尾单位）"""
+        units = ["仟", "佰", "拾", ""]
+        res, prev_zero = "", False
+        for i, u in enumerate(units):
+            d = n // (10 ** (3 - i)) % 10
+            if d:
+                if prev_zero:
+                    res += "零"
+                res += digits[d] + u
+                prev_zero = False
+            else:
+                prev_zero = bool(res)  # 中间有零才补
+        return res
+
+    yi  = amount // 100_000_000
+    wan = (amount % 100_000_000) // 10_000
+    ge  = amount % 10_000
+
+    parts = []
+    if yi:
+        parts.append(_four(yi) + "亿")
+    if wan:
+        if yi and wan < 1000:
+            parts.append("零")
+        parts.append(_four(wan) + "万")
+    if ge:
+        if (yi or wan) and ge < 1000:
+            parts.append("零")
+        parts.append(_four(ge))
+
+    result = "".join(parts) + "元整"
+    # 壹拾X → 拾X（整十万以下习惯省去壹）
+    if result.startswith("壹拾"):
+        result = result[1:]
+    return result
 
 
 def _set_para_text(para, new_text: str):
@@ -111,14 +162,13 @@ def generate_termination_agreement(fields: dict, output_name: str = None) -> str
 
     doc = Document(TPL_AGREEMENT)
 
-    name      = fields.get("name", "")
-    id_number = fields.get("id_number", "")
-    phone     = fields.get("phone", "")
-    compensation     = str(fields.get("compensation", ""))
-    bank_account_name = fields.get("bank_account_name", name)  # 户名默认为本人姓名
-    bank_name        = fields.get("bank_name", "")
-    bank_account     = fields.get("bank_account", "")
-    bank_branch      = fields.get("bank_branch", "")
+    name              = fields.get("name", "")
+    id_number         = fields.get("id_number", "")
+    phone             = fields.get("phone", "")
+    compensation      = str(fields.get("compensation", ""))
+    bank_account_name = fields.get("bank_account_name", name)   # 户名默认为本人
+    bank_name         = fields.get("bank_name", "")
+    bank_account      = fields.get("bank_account", "")
 
     def _parse_dt(ds):
         try:
@@ -128,11 +178,18 @@ def generate_termination_agreement(fields: dict, output_name: str = None) -> str
 
     start_dt = _parse_dt(fields.get("start_date", ""))
     leave_dt = _parse_dt(fields.get("leave_date", ""))
+    # 支付期限 = 拟解除日期后 1 个月
+    pay_dt   = leave_dt + relativedelta(months=1) if leave_dt else None
+
+    # 赔偿金显示
+    comp_is_none = compensation in ("无", "0", "")
+    comp_num = "" if comp_is_none else compensation
+    comp_cn  = "无" if comp_is_none else _num_to_cn(compensation)
 
     for para in doc.paragraphs:
         t = para.text
 
-        # 乙方信息块（多行段落）
+        # ── 乙方信息块 ──────────────────────────────────────────────────
         if "乙方（员工）：" in t:
             lines = t.split("\n")
             new_lines = []
@@ -146,44 +203,57 @@ def generate_termination_agreement(fields: dict, output_name: str = None) -> str
                     new_lines.append(f"联系电话：{phone}")
                 elif "入职日期：" in s and start_dt:
                     new_lines.append(
-                        f"入职日期：{start_dt.year}年{start_dt.month}月{start_dt.day}日"
-                    )
+                        f"入职日期：{start_dt.year}年{start_dt.month}月{start_dt.day}日")
                 elif "拟解除日期：" in s and leave_dt:
                     new_lines.append(
-                        f"拟解除日期：{leave_dt.year}年{leave_dt.month}月{leave_dt.day}日"
-                    )
+                        f"拟解除日期：{leave_dt.year}年{leave_dt.month}月{leave_dt.day}日")
                 else:
                     new_lines.append(line)
             _set_para_text(para, "\n".join(new_lines))
 
-        # 第 1.1 条：解除日填写
+        # ── 1.1 条：确认解除日期 ─────────────────────────────────────────
         elif "甲乙双方确认于" in t and leave_dt:
             new_t = re.sub(
-                r"确认于\s+年\s+月\s+日",
+                r"确认于\s*_+年\s*_+月\s*_+日",
                 f"确认于{leave_dt.year}年{leave_dt.month}月{leave_dt.day}日",
                 t,
             )
             if new_t != t:
                 _set_para_text(para, new_t)
 
-        # 甲方签署日期 = 拟解除日期（用户要求）
+        # ── 2.1 条：赔偿金金额（民币_____（大写：））─────────────────────
+        elif "民币" in t and "大写" in t:
+            new_t = re.sub(r'民币_+', f'民币{comp_num}', t)
+            new_t = re.sub(r'大写：\s*\)?', f'大写：{comp_cn}）', new_t)
+            new_t = new_t.replace("））", "）")
+            if new_t != t:
+                _set_para_text(para, new_t)
+
+        # ── 2.2 条：支付期限日期（甲方于___年__月__日前）────────────────
+        elif "前将补偿金支付" in t and pay_dt:
+            new_t = re.sub(
+                r'甲方于\s*_+年\s*_+月\s*_+日',
+                f'甲方于{pay_dt.year}年{pay_dt.month}月{pay_dt.day}日',
+                t,
+            )
+            if new_t != t:
+                _set_para_text(para, new_t)
+
+        # ── 银行账户字段（户名:/开户行:/账号: 后面无内容直接追加）────────
+        elif re.match(r'^户名[:：]\s*$', t.strip()):
+            _set_para_text(para, t.rstrip() + bank_account_name)
+        elif re.match(r'^开户行[:：]\s*$', t.strip()):
+            _set_para_text(para, t.rstrip() + bank_name)
+        elif re.match(r'^账号[:：]\s*$', t.strip()):
+            _set_para_text(para, t.rstrip() + bank_account)
+
+        # ── 甲方签署日期 = 拟解除日期（用户要求）────────────────────────
         elif "__________年____月____日" in t and leave_dt:
             new_t = t.replace(
                 "__________年____月____日",
                 f"{leave_dt.year}年{leave_dt.month}月{leave_dt.day}日",
             )
             _set_para_text(para, new_t)
-
-    # 赔偿金、银行信息、支付期限：整文档替换
-    comp_display = "无" if compensation in ("无", "0", "") else f"{compensation}元"
-    payment_period = fields.get("payment_period", "1个月内")
-    _replace_in_doc(doc, {
-        "（经济补偿金金额）":   comp_display,
-        "（支付期限）":         payment_period,
-        "（户名）":             bank_account_name,
-        "（开户行）":           bank_name or bank_branch,
-        "（账号）":             bank_account,
-    })
 
     fname    = output_name or name
     out_path = os.path.join(OUTPUT_DIR, f"{fname}-离职协议.docx")
