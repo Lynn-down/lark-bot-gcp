@@ -382,8 +382,14 @@ def generate_contract(contract_type: str, fields: dict,
     _name = fields.get("name", "")
     if _name:
         _sign_kws = ["签字", "签名", "签署", "乙方（劳动者）", "乙方（劳务人员）",
-                     "乙方（实习生）", "乙方签"]
-        for para in doc.paragraphs:
+                     "乙方（实习生）", "乙方签", "乙  方", "乙方："]
+        # 正文段落 + 所有表格单元格段落都要检查
+        all_paras = list(doc.paragraphs)
+        for tbl in doc.tables:
+            for row in tbl.rows:
+                for cell in row.cells:
+                    all_paras.extend(cell.paragraphs)
+        for para in all_paras:
             if any(kw in para.text for kw in _sign_kws) and _name in para.text:
                 new_t = para.text.replace(_name, "")
                 _set_para_text(para, new_t)

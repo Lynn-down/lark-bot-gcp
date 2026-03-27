@@ -1,7 +1,7 @@
 """
 Lark HR 小机器人 - v5.4
 """
-APP_VERSION = "v5.5-claude-opus"
+APP_VERSION = "v5.6-claude-opus"
 
 import os
 import re
@@ -660,21 +660,30 @@ def _is_contract_related(user_message: str, pending: dict) -> bool:
     messages = [
         {"role": "system", "content": (
             f"背景：HR正在出一份{context}，但信息还不完整（如缺少地址、身份证等），等待HR补充。\n"
-            "请判断HR的新消息是否是在补充这份合同的信息。\n"
-            "以下情况回复 YES：提供字段值、让你去名册查、给出日期/地址/薪资/身份证等、"
-            "或者让你填某个空缺字段。\n"
-            "以下情况回复 NO：明确发起全新合同请求、或和合同完全无关的话题。\n"
+            "请判断HR的新消息是否是在补充这份合同缺失的字段信息。\n"
+            "回复 YES 的情况（必须同时满足：具体提供了某个字段的值）：\n"
+            "  - 给出了日期、地址、身份证号、联系电话、薪资、岗位等具体数值\n"
+            "  - 明确说'从名册取'/'帮我查一下'\n"
+            "回复 NO 的情况（以下任一即为 NO）：\n"
+            "  - 询问功能或能力（'你能出合同吗'、'有这个功能吗'、'你会做吗'）\n"
+            "  - 发起全新合同请求（含'帮我出'、'出一份'、'做一份'、'生成'）\n"
+            "  - 聊其他完全不相关的话题（天气、打招呼、闲聊等）\n"
+            "  - 只说了人名但没有提供任何字段值\n"
             "只回复 YES 或 NO，不加任何解释。"
         )},
         {"role": "user", "content": user_message}
     ]
     try:
-        resp = llm_client_v2._call_api(messages, tools=None, temperature=0)
+        resp = llm_client_v2._call_api(messages, tools=None, temperature=0, timeout=10)
+        if "error" in resp:
+            raise RuntimeError(resp["error"])
         answer = resp.get("choices", [{}])[0].get("message", {}).get("content", "").strip().upper()
-        return "YES" in answer
+        logger.info(f"[_is_contract_related] '{user_message[:30]}' -> {answer}")
+        return answer.startswith("YES")
     except Exception as e:
-        logger.warning(f"_is_contract_related LLM failed: {e}, falling back to keyword")
-        return not any(kw in user_message for kw in ["帮我出", "生成合同", "出一份", "做一份"])
+        logger.warning(f"_is_contract_related LLM failed: {e}, defaulting to NO")
+        # 超时/报错时保守处理：不拦截，让用户重新明确说明
+        return False
 
 
 def _enrich_contract_from_roster(name: str, fields: dict) -> None:

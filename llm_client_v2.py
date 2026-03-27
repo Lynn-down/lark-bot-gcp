@@ -311,33 +311,34 @@ HR看板存储公司面试候选人信息，字段包括：
             logger.error(f"LLM chat error: {e}")
             return "抱歉，我这边出了点小状况😵 你能稍后再问我吗？"
     
-    def _call_api(self, 
-                  messages: List[Dict], 
+    def _call_api(self,
+                  messages: List[Dict],
                   tools: Optional[List[Dict]] = None,
-                  temperature: float = 0.7) -> Dict:
+                  temperature: float = 0.7,
+                  timeout: int = 60) -> Dict:
         """调用LLM API"""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        
+
         payload = {
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": self.max_tokens
         }
-        
+
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-        
+
         try:
             resp = requests.post(
                 self.api_url,
                 headers=headers,
                 json=payload,
-                timeout=60
+                timeout=timeout
             )
             resp.raise_for_status()
             data = resp.json()
