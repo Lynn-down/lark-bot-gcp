@@ -655,50 +655,79 @@ def process_message(user_message: str, user_id: str, sender_name: str,
 
     if _active_tasks or (is_hr and any(kw in user_message for kw in _CONTRACT_TRIGGER_KWS)):
 
-        # ① 当前用户自己有未完成任务 → sticky：除非取消，否则直接合并继续
+        # ① 当前用户自己有未完成任务
         if user_id in _active_tasks:
-            ci = _classify_contract_intent(user_message, sender_name, is_hr, _active_tasks)
-            if ci["action"] == "cancel" and ci.get("task_uid") == user_id:
+            # 快速判断：消息是否包含合同字段信息（不需要 LLM，直接路由）
+            _field_patterns = [
+                r'\d{4}[-/年]\d{1,2}[-/月]\d{1,2}',                                    # 日期
+                r'[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[012])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]',  # 身份证
+                r'1[3-9]\d{9}',                                                          # 手机
+                r'[省市区县街道乡镇号楼室]',                                              # 地址
+            ]
+            _field_kws = ["XXX", "xxx", "日期", "身份证", "户籍", "联系地址", "联系电话",
+                          "手机号", "签订", "开始日期", "入职", "岗位", "职位", "薪资",
+                          "日薪", "月薪", "元/天", "元/月", "地址", "邮编"]
+            _is_field_msg = (
+                any(re.search(p, user_message) for p in _field_patterns)
+                or any(kw in user_message for kw in _field_kws)
+            )
+
+            if _is_field_msg:
+                # 有字段信息，直接合并进合同任务
                 with _pending_lock:
-                    task = _pending_contracts.pop(user_id, {})
+                    task = _pending_contracts.get(user_id, {})
+                merged = task.get("original", "") + " " + user_message
+                with _pending_lock:
+                    _pending_contracts.pop(user_id, None)
+                _save_pending()
+                return handle_contract(merged, user_id, chat_id, msg_id)
+
+            # 没有字段信息 → LLM 判断：是在补充/取消？还是真的在问别的？
+            ci = _classify_contract_intent(user_message, sender_name, is_hr, _active_tasks)
+            if ci["action"] in ("supplement", "cancel") and ci.get("task_uid") == user_id:
+                if ci["action"] == "cancel":
+                    with _pending_lock:
+                        task = _pending_contracts.pop(user_id, {})
+                    _save_pending()
+                    name = task.get("name", ""); ct = CONTRACT_TYPE_NAMES.get(task.get("contract_type", ""), "合同")
+                    return f"好的，{(name+'的'+ct) if name else ct}先不出了，有需要再说～"
+                with _pending_lock:
+                    task = _pending_contracts.get(user_id, {})
+                merged = task.get("original", "") + " " + user_message
+                with _pending_lock:
+                    _pending_contracts.pop(user_id, None)
+                _save_pending()
+                return handle_contract(merged, user_id, chat_id, msg_id)
+            # LLM 判断为无关 → 正常回答，末尾由 _pr() 附加提醒
+            # fall through
+
+        # ② 其他用户 / 当前用户无任务 → LLM 分类
+        else:
+            ci = _classify_contract_intent(user_message, sender_name, is_hr, _active_tasks)
+
+            if ci["action"] == "new":
+                if not is_hr:
+                    return _pr("合同生成功能仅限HR使用哦～")
+                return handle_contract(user_message, user_id, chat_id, msg_id)
+
+            elif ci["action"] == "supplement":
+                task_uid = ci["task_uid"]
+                with _pending_lock:
+                    task = _pending_contracts.get(task_uid, {})
+                merged = task.get("original", "") + " " + user_message
+                with _pending_lock:
+                    _pending_contracts.pop(task_uid, None)
+                _save_pending()
+                return handle_contract(merged, task_uid, chat_id, msg_id)
+
+            elif ci["action"] == "cancel":
+                task_uid = ci["task_uid"]
+                with _pending_lock:
+                    task = _pending_contracts.pop(task_uid, {})
                 _save_pending()
                 name = task.get("name", ""); ct = CONTRACT_TYPE_NAMES.get(task.get("contract_type", ""), "合同")
                 return f"好的，{(name+'的'+ct) if name else ct}先不出了，有需要再说～"
-            # 不管 LLM 说 NONE/NEW/SUPP，只要不是 cancel，都粘住合同任务继续
-            with _pending_lock:
-                task = _pending_contracts.get(user_id, {})
-            merged = task.get("original", "") + " " + user_message
-            with _pending_lock:
-                _pending_contracts.pop(user_id, None)
-            _save_pending()
-            return handle_contract(merged, user_id, chat_id, msg_id)
-
-        # ② 其他用户发消息 / 当前用户无任务 → LLM 分类
-        ci = _classify_contract_intent(user_message, sender_name, is_hr, _active_tasks)
-
-        if ci["action"] == "new":
-            if not is_hr:
-                return _pr("合同生成功能仅限HR使用哦～")
-            return handle_contract(user_message, user_id, chat_id, msg_id)
-
-        elif ci["action"] == "supplement":
-            task_uid = ci["task_uid"]
-            with _pending_lock:
-                task = _pending_contracts.get(task_uid, {})
-            merged = task.get("original", "") + " " + user_message
-            with _pending_lock:
-                _pending_contracts.pop(task_uid, None)
-            _save_pending()
-            return handle_contract(merged, task_uid, chat_id, msg_id)
-
-        elif ci["action"] == "cancel":
-            task_uid = ci["task_uid"]
-            with _pending_lock:
-                task = _pending_contracts.pop(task_uid, {})
-            _save_pending()
-            name = task.get("name", ""); ct = CONTRACT_TYPE_NAMES.get(task.get("contract_type", ""), "合同")
-            return f"好的，{(name+'的'+ct) if name else ct}先不出了，有需要再说～"
-        # action == "none": fall through to normal handling
+            # action == "none": fall through to normal handling
 
     # ── 已生成合同的字段更新（关键词兜底）───────────────────────────────────────
     with _pending_lock:
@@ -882,7 +911,7 @@ def handle_contract(user_message: str, user_id: str = "",
         ("salary",            salary_label),
     ]
     missing = [label for key, label in required
-               if not fields.get(key) or str(fields[key]).strip() in ("", "XXX")]
+               if not fields.get(key) or str(fields[key]).strip() == ""]
 
     if missing:
         # 保存待处理状态（用于下一条消息的补充），包含已提取的名字供LLM意图判断使用
