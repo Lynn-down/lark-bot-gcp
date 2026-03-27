@@ -378,6 +378,17 @@ def generate_contract(contract_type: str, fields: dict,
     elif contract_type == "intern":
         _fill_intern(doc, fields)
 
+    # 安全保险：确保乙方签字行保持留白（不含人名）
+    _name = fields.get("name", "")
+    if _name:
+        _sign_kws = ["签字", "签名", "签署", "乙方（劳动者）", "乙方（劳务人员）",
+                     "乙方（实习生）", "乙方签"]
+        for para in doc.paragraphs:
+            if any(kw in para.text for kw in _sign_kws) and _name in para.text:
+                new_t = para.text.replace(_name, "")
+                _set_para_text(para, new_t)
+                logger.warning(f"已清除签字行中的姓名: {para.text[:40]}")
+
     name = output_name or fields.get('name', '未命名')
     filename = f"{name}-{CONTRACT_TYPE_NAMES[contract_type]}.docx"
     out_path = os.path.join(OUTPUT_DIR, filename)

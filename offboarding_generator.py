@@ -189,8 +189,10 @@ def generate_termination_agreement(fields: dict, output_name: str = None) -> str
     for para in doc.paragraphs:
         t = para.text
 
-        # ── 乙方信息块 ──────────────────────────────────────────────────
-        if "乙方（员工）：" in t:
+        # ── 乙方信息块（头部多行信息，有身份证/联系电话等字段）──────────
+        # 注意：不能匹配底部的乙方签字行（签字行应留白）
+        if ("乙方（员工）：" in t and
+                any(kw in t for kw in ["身份证号", "联系电话", "入职日期", "拟解除日期", "\n"])):
             lines = t.split("\n")
             new_lines = []
             for line in lines:
