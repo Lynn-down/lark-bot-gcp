@@ -436,42 +436,96 @@ CONTRACT_EXTRACT_SYSTEM_PROMPT = """你是一个合同信息提取助手。
 def _extract_fields_regex(text: str) -> dict:
     """
     纯正则兜底提取合同字段（LLM 不可用时使用）。
-    支持格式：姓名张三 / 姓名：张三 / 姓名是张三 等
+    支持结构化多行格式（字段名：值）和自然语言混合格式。
     """
     fields = {}
 
-    # 姓名
-    m = re.search(r'姓名[是为：:\s]*([^\s，,。！?、]{2,5})', text)
+    def _norm_date(s: str) -> str:
+        """把各种日期格式统一为 YYYY-MM-DD"""
+        s = re.sub(r'[年月]', '-', s).rstrip('日').replace('/', '-').strip()
+        parts = s.split('-')
+        if len(parts) == 3:
+            return f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
+        return s
+
+    # ── 姓名 ──────────────────────────────────────────────────────────────
+    # 优先：姓名：张三 / 姓名张三 / 姓名是张三
+    m = re.search(r'姓名[是为：:\s]*([^\s，,。！?、\d]{2,5})', text)
     if m:
         fields['name'] = m.group(1).strip()
+    # 兜底：X的合同（如"出一份张三的合同"）
+    if not fields.get('name'):
+        m = re.search(r'([^\s，,、出份一]{2,4})的(?:劳动|劳务|实习)?合同', text)
+        if m:
+            fields['name'] = m.group(1).strip()
 
-    # 职位 / 岗位 / 职务
-    m = re.search(r'(?:职位|岗位|职务|职称|职责)[是为：:\s]*([^\s，,。！?\d、]{2,15})', text)
+    # ── 岗位 ──────────────────────────────────────────────────────────────
+    m = re.search(r'(?:职位|岗位|职务|职称)[是为：:\s]*([^\s，,。！?\d、]{2,15})', text)
     if m:
         fields['job_title'] = m.group(1).strip()
+    # 带后缀的岗位（如"产品经理"、"运营专员"）
+    if not fields.get('job_title'):
+        m = re.search(r'[，,]\s*([^\s，,、\d]{2,8}(?:部|岗|师|员|助理|专员|经理|总监|工程师|实习生|运营|产品|设计|开发))\s*[，,]', text)
+        if m:
+            fields['job_title'] = m.group(1).strip()
+    # 兜底：逗号之间的 2-4 字中文短词（排除已知非岗位词）
+    # 用零宽断言避免逗号被消耗，相邻词都能匹配
+    if not fields.get('job_title'):
+        _non_job = {'实习合同', '劳动合同', '劳务合同', '一天', '每天', '月薪', '日薪'}
+        for m in re.finditer(r'(?<=[，,])\s*([^\s，,。！?\d、]{2,5})\s*(?=[，,])', text):
+            cand = m.group(1).strip()
+            if not any(kw in cand for kw in _non_job):
+                fields['job_title'] = cand
+                break
 
-    # 薪资 / 工资 / 月薪
+    # ── 签订日期 ──────────────────────────────────────────────────────────
+    m = re.search(r'签订日期[是为：:\s]*(\d{4}[年/-]\d{1,2}[月/-]\d{1,2}|\d{4}-\d{2}-\d{2})', text)
+    if m:
+        fields['sign_date'] = _norm_date(m.group(1))
+
+    # ── 合同开始日期 ──────────────────────────────────────────────────────
+    m = re.search(r'(?:合同)?开始日期[是为：:\s]*(\d{4}[年/-]\d{1,2}[月/-]\d{1,2}|\d{4}-\d{2}-\d{2})', text)
+    if not m:
+        m = re.search(r'入职(?:日期|时间)?[是为：:\s]*(\d{4}[年/-]\d{1,2}[月/-]\d{1,2}|\d{4}-\d{2}-\d{2})', text)
+    if m:
+        fields['start_date'] = _norm_date(m.group(1))
+
+    # ── 薪资 ──────────────────────────────────────────────────────────────
+    # 月薪
     m = re.search(r'(?:薪资|工资|月薪|薪酬|底薪)[是为：:\s]*([0-9,，.]+)', text)
     if m:
-        fields['salary'] = m.group(1).replace(',', '').replace('，', '').replace('.', '')
+        fields['salary'] = re.sub(r'[,，]', '', m.group(1))
+        fields['salary_type'] = 'fixed'
+    # 日薪：200一天 / 200/天 / 200元/天 / 日薪200
+    if not fields.get('salary'):
+        m = re.search(r'([0-9]+)\s*(?:元\s*)?[/每一]天|日薪[是为：:\s]*([0-9]+)', text)
+        if m:
+            fields['salary'] = m.group(1) or m.group(2)
+            fields['salary_type'] = 'daily'
 
-    # 身份证号（18位）
-    m = re.search(r'(?:身份证[号码]?)[是为：:\s]*([0-9Xx]{18})', text)
+    # ── 身份证号（18位）─────────────────────────────────────────────────
+    m = re.search(r'(?:身份证[号码]?[是为：:\s]*)?([0-9]{17}[0-9Xx])', text)
     if m:
         fields['id_number'] = m.group(1).upper()
 
-    # 手机 / 电话
-    m = re.search(r'(?:手机|电话)[号码]?[是为：:\s]*([1][3-9][0-9]{9})', text)
+    # ── 电话 ──────────────────────────────────────────────────────────────
+    m = re.search(r'(?:手机|电话|联系电话)[号码]?[是为：:\s]*([1][3-9][0-9]{9})', text)
+    if not m:
+        m = re.search(r'\b([1][3-9][0-9]{9})\b', text)
     if m:
         fields['phone'] = m.group(1)
 
-    # 入职日期
-    m = re.search(r'(?:入职|开始)[日期时间]?[是为：:\s]*(\d{4}[年/-]\d{1,2}[月/-]\d{1,2})', text)
+    # ── 户籍地址 ──────────────────────────────────────────────────────────
+    m = re.search(r'户籍(?:地址)?[是为：:\s]*([^\n，,。！?]{5,50})', text)
     if m:
-        d = re.sub(r'[年月]', '-', m.group(1)).rstrip('日').replace('/', '-')
-        fields['start_date'] = d
+        fields['household_address'] = m.group(1).strip()
 
-    # 工作地点
+    # ── 联系地址 ──────────────────────────────────────────────────────────
+    m = re.search(r'(?:联系|现)(?:居住)?地址[是为：:\s]*([^\n，,。！?]{5,50})', text)
+    if m:
+        fields['contact_address'] = m.group(1).strip()
+
+    # ── 工作地点 ──────────────────────────────────────────────────────────
     m = re.search(r'(?:工作地点|工作地|城市)[是为：:\s]*([^\s，,。！?、]{2,10})', text)
     if m:
         fields['work_location'] = m.group(1).strip()

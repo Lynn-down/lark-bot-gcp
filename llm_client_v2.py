@@ -340,7 +340,12 @@ HR看板存储公司面试候选人信息，字段包括：
                 timeout=60
             )
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            # 部分代理在出错时返回 list 而非 dict，统一转为 error dict
+            if not isinstance(data, dict):
+                logger.error(f"API returned unexpected type {type(data)}: {str(data)[:200]}")
+                return {"error": f"unexpected response type: {str(data)[:100]}"}
+            return data
         except requests.exceptions.RequestException as e:
             logger.error(f"API request failed: {e}")
             return {"error": str(e)}
