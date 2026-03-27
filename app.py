@@ -56,6 +56,39 @@ _pending_lock = threading.Lock()
 _pending_offboardings: Dict[str, Dict] = {}
 _pending_offboarding_lock = threading.Lock()
 
+# ── 合同待处理状态持久化（重启后恢复，24小时过期）────────────────────────────
+_PENDING_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_contracts.json")
+
+def _save_pending():
+    with _pending_lock:
+        data = {k: {**v, "_t": datetime.now().isoformat()} for k, v in _pending_contracts.items()}
+    try:
+        with open(_PENDING_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"save pending failed: {e}")
+
+def _load_pending():
+    if not os.path.exists(_PENDING_FILE):
+        return
+    try:
+        with open(_PENDING_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cutoff = time.time() - 86400  # 24小时
+        valid = {}
+        for uid, state in data.items():
+            saved_at = state.pop("_t", None)
+            try:
+                if saved_at and datetime.fromisoformat(saved_at).timestamp() > cutoff:
+                    valid[uid] = state
+            except Exception:
+                pass
+        with _pending_lock:
+            _pending_contracts.update(valid)
+        logger.info(f"Loaded {len(valid)} pending contracts from disk")
+    except Exception as e:
+        logger.error(f"load pending failed: {e}")
+
 # 飞书配置
 ENCRYPT_KEY = os.environ.get("LARK_ENCRYPT_KEY", "")
 VERIFICATION_TOKEN = os.environ.get("LARK_VERIFICATION_TOKEN", "")
@@ -65,6 +98,7 @@ OPEN_API_BASE = "https://open.feishu.cn/open-apis"
 
 # 初始化名册
 init_roster()
+_load_pending()
 
 # 消息去重
 _MAX_PROCESSED = 5000
@@ -541,15 +575,36 @@ def process_message(user_message: str, user_id: str, sender_name: str,
     """处理用户消息"""
     logger.info(f"[{user_id}/{sender_name}] Processing: {user_message[:50]}")
 
+    # 未完成合同提醒 helper（合并到任意回复末尾）
+    def _pr(reply: str) -> str:
+        with _pending_lock:
+            p = _pending_contracts.get(user_id)
+        if p and not p.get("generated"):
+            p_name = p.get("name", "")
+            p_cn   = CONTRACT_TYPE_NAMES.get(p.get("contract_type", ""), "合同")
+            hint   = (p_name + "的" + p_cn) if p_name else p_cn
+            return reply + f"\n\n---\n对了，**{hint}**的合同还没填完哦，补充好信息直接@我说～"
+        return reply
+
     # 特殊命令
     if user_message.lower() in ["/clear", "清空", "忘记"]:
         llm_client_v2.conversation_manager.clear_history(user_id)
         with _pending_lock:
             _pending_contracts.pop(user_id, None)
+        _save_pending()
         return "好的，之前的对话我都忘啦🙃"
 
+    # 明确取消合同任务
+    _cancel_kws = ["不出了", "不用出", "取消合同", "不生成了", "先不出", "暂时不出", "不做合同了", "合同不用了"]
+    with _pending_lock:
+        _has_pending_now = user_id in _pending_contracts and not _pending_contracts[user_id].get("generated")
+    if _has_pending_now and any(kw in user_message for kw in _cancel_kws):
+        with _pending_lock:
+            _pending_contracts.pop(user_id, None)
+        _save_pending()
+        return "好的，合同先不出了，需要的时候再跟我说～"
+
     is_hr = is_hr_user(sender_name, user_id)
-    _pending_reminder = None   # 若当前消息与合同无关，末尾附加提醒
 
     # ── 合同追问状态（用户已发起合同但字段不全）──
     with _pending_lock:
@@ -565,6 +620,7 @@ def process_message(user_message: str, user_id: str, sender_name: str,
                 merged = pending["original"] + " " + user_message
                 with _pending_lock:
                     _pending_contracts.pop(user_id, None)
+                _save_pending()
                 return handle_contract(merged, user_id, chat_id, msg_id)
             # 不是字段补充，不拦截，继续正常路由
         else:
@@ -573,9 +629,9 @@ def process_message(user_message: str, user_id: str, sender_name: str,
                 merged = pending["original"] + " " + user_message
                 with _pending_lock:
                     _pending_contracts.pop(user_id, None)
+                _save_pending()
                 return handle_contract(merged, user_id, chat_id, msg_id)
-            # LLM判断为无关：正常处理，但在末尾提醒用户合同还没完成
-            _pending_reminder = pending
+            # LLM判断为无关：正常处理，末尾由 _pr() 统一附加提醒
 
     # ── 离职追问状态 ──
     with _pending_offboarding_lock:
@@ -602,7 +658,7 @@ def process_message(user_message: str, user_id: str, sender_name: str,
         if _is_contract_inquiry:
             pass  # 能力询问，继续往下走交给 LLM
         elif not is_hr:
-            return "合同生成功能仅限HR使用哦～"
+            return _pr("合同生成功能仅限HR使用哦～")
         else:
             return handle_contract(user_message, user_id, chat_id, msg_id)
 
@@ -614,7 +670,7 @@ def process_message(user_message: str, user_id: str, sender_name: str,
         if _is_offboarding_inquiry:
             pass  # 流程询问，交给 LLM 回答
         elif not is_hr:
-            return "离职流程由HR处理，有疑问请联系HR～"
+            return _pr("离职流程由HR处理，有疑问请联系HR～")
         else:
             return handle_offboarding(user_message, user_id, chat_id, msg_id)
 
@@ -624,26 +680,29 @@ def process_message(user_message: str, user_id: str, sender_name: str,
     # 薪资敏感信息：HR 可查，非HR 拒绝
     if any(kw in user_message for kw in ["薪资", "工资", "底薪", "绩效", "涨薪", "薪酬", "到手", "用人成本"]):
         if not is_hr:
-            return "薪资属于保密信息，具体请直接联系HR确认 🙏"
+            return _pr("薪资属于保密信息，具体请直接联系HR确认 🙏")
         names = re.findall(r'[\u4e00-\u9fa5]{2,4}', user_message)
         if names:
-            return query_member(names[0], is_hr=True)
-        return "请告诉我要查哪位同学的薪资信息～"
+            return _pr(query_member(names[0], is_hr=True))
+        return _pr("请告诉我要查哪位同学的薪资信息～")
 
-    # 名册精确查询（单人查询）—— 排除含工作类型词的群体查询
+    # 名册精确查询（单人查询）—— 有未完成合同时跳过，避免把合同字段当人名查
     _single_person_kws = ["是谁", "的资料", "的信息", "职位", "岗位", "身份证", "银行卡",
                           "电话", "手机", "联系方式", "联系电话", "手机号"]
-    if (any(kw in user_message for kw in _single_person_kws)
+    with _pending_lock:
+        _active_pending = user_id in _pending_contracts and not _pending_contracts[user_id].get("generated")
+    if (not _active_pending
+            and any(kw in user_message for kw in _single_person_kws)
             and not any(kw in user_message for kw in _WORK_TYPE_KEYWORDS + ["多少", "几个", "列表", "所有", "部门"])):
         names = re.findall(r'[\u4e00-\u9fa5]{2,4}', user_message)
         if names:
-            return query_member(names[0], is_hr=is_hr)
+            return _pr(query_member(names[0], is_hr=is_hr))
 
     # 纯总人数统计（无具体类型词、无部门词时直接返回）
     _DEPT_KEYWORDS = ["部门", "部", "市场", "产品", "技术", "运营", "销售", "人力", "行政", "财务"]
     if any(kw in user_message for kw in ["多少人", "人数", "总人数", "统计"]):
         if not any(kw in user_message for kw in _WORK_TYPE_KEYWORDS + _DEPT_KEYWORDS):
-            return get_roster_stats()
+            return _pr(get_roster_stats())
 
     # 其他（含复杂名册查询、实习生列表等）交给 LLM + 工具
     # per-request 闭包：query_member 携带 is_hr 上下文
@@ -664,13 +723,7 @@ def process_message(user_message: str, user_id: str, sender_name: str,
             available_functions=_available_functions,
             is_hr=is_hr
         )
-        # 若用户有待处理合同但本条消息与合同无关，末尾附加提醒
-        if _pending_reminder:
-            p_name = _pending_reminder.get("name", "")
-            p_cn   = CONTRACT_TYPE_NAMES.get(_pending_reminder.get("contract_type", ""), "合同")
-            hint   = p_name + "的" + p_cn if p_name else p_cn
-            reply  = reply + f"\n\n---\n对了，{hint}还没填完，需要继续的话跟我说～"
-        return reply
+        return _pr(reply)
     except Exception as e:
         logger.error(f"LLM error: {e}")
         return "我现在有点忙，请稍后再试～"
@@ -686,8 +739,9 @@ def _is_contract_related(user_message: str, pending: dict) -> bool:
         {"role": "system", "content": (
             f"背景：HR正在出一份{context}，但信息还不完整（如缺少地址、身份证等），等待HR补充。\n"
             "请判断HR的新消息是否是在补充这份合同缺失的字段信息。\n"
-            "回复 YES 的情况（必须同时满足：具体提供了某个字段的值）：\n"
+            "回复 YES 的情况（满足其一即可）：\n"
             "  - 给出了日期、地址、身份证号、联系电话、薪资、岗位等具体数值\n"
+            "  - 说明某字段用占位符代替（如'用XXX替代'、'先填XXX'、'身份证号XXX'等）\n"
             "  - 明确说'从名册取'/'帮我查一下'\n"
             "回复 NO 的情况（以下任一即为 NO）：\n"
             "  - 询问功能或能力（'你能出合同吗'、'有这个功能吗'、'你会做吗'）\n"
@@ -781,6 +835,7 @@ def handle_contract(user_message: str, user_id: str = "",
                 "contract_type": contract_type,
                 "name": fields.get("name", ""),
             }
+        _save_pending()
         return (f"收到你要生成「{cn_name}」的需求 ✅\n"
                 f"还需要以下信息，补充后我马上生成：\n"
                 + "\n".join(f"  • {m}" for m in missing))
@@ -792,6 +847,7 @@ def handle_contract(user_message: str, user_id: str = "",
             "contract_type": contract_type,
             "generated": True,   # 标记已生成过，可接受更新
         }
+    _save_pending()
 
     name = fields["name"]
 
