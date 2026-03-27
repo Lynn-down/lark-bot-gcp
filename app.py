@@ -524,6 +524,7 @@ def process_message(user_message: str, user_id: str, sender_name: str,
         return "好的，之前的对话我都忘啦🙃"
 
     is_hr = is_hr_user(sender_name, user_id)
+    _pending_reminder = None   # 若当前消息与合同无关，末尾附加提醒
 
     # ── 合同追问状态（用户已发起合同但字段不全）──
     with _pending_lock:
@@ -541,12 +542,15 @@ def process_message(user_message: str, user_id: str, sender_name: str,
                     _pending_contracts.pop(user_id, None)
                 return handle_contract(merged, user_id, chat_id, msg_id)
             # 不是字段补充，不拦截，继续正常路由
-        elif not any(kw in user_message for kw in ["合同", "劳动合同", "劳务合同", "实习合同"]):
-            # 尚未生成过，且消息里不含"合同"关键词：把补充内容合并后重新处理
-            merged = pending["original"] + " " + user_message
-            with _pending_lock:
-                _pending_contracts.pop(user_id, None)
-            return handle_contract(merged, user_id, chat_id, msg_id)
+        else:
+            # 尚未生成过：用LLM判断是否是对这份合同的补充
+            if _is_contract_related(user_message, pending):
+                merged = pending["original"] + " " + user_message
+                with _pending_lock:
+                    _pending_contracts.pop(user_id, None)
+                return handle_contract(merged, user_id, chat_id, msg_id)
+            # LLM判断为无关：正常处理，但在末尾提醒用户合同还没完成
+            _pending_reminder = pending
 
     # ── 离职追问状态 ──
     with _pending_offboarding_lock:
@@ -628,16 +632,72 @@ def process_message(user_message: str, user_id: str, sender_name: str,
         "update_interview": tool_update_interview,
     }
     try:
-        return llm_client_v2.chat_with_tools(
+        reply = llm_client_v2.chat_with_tools(
             user_message=user_message,
             user_id=user_id,
             tools=TOOLS,
             available_functions=_available_functions,
             is_hr=is_hr
         )
+        # 若用户有待处理合同但本条消息与合同无关，末尾附加提醒
+        if _pending_reminder:
+            p_name = _pending_reminder.get("name", "")
+            p_cn   = CONTRACT_TYPE_NAMES.get(_pending_reminder.get("contract_type", ""), "合同")
+            hint   = p_name + "的" + p_cn if p_name else p_cn
+            reply  = reply + f"\n\n---\n对了，{hint}还没填完，需要继续的话跟我说～"
+        return reply
     except Exception as e:
         logger.error(f"LLM error: {e}")
         return "我现在有点忙，请稍后再试～"
+
+
+def _is_contract_related(user_message: str, pending: dict) -> bool:
+    """LLM判断新消息是否是对待处理合同的补充（而非新话题或新合同请求）"""
+    name = pending.get("name", "")
+    contract_type = pending.get("contract_type", "labor")
+    cn_name = CONTRACT_TYPE_NAMES.get(contract_type, "合同")
+    context = f"「{cn_name}」" + (f"（当事人：{name}）" if name else "")
+    messages = [
+        {"role": "system", "content": (
+            f"背景：HR正在出一份{context}，但信息还不完整（如缺少地址、身份证等），等待HR补充。\n"
+            "请判断HR的新消息是否是在补充这份合同的信息。\n"
+            "以下情况回复 YES：提供字段值、让你去名册查、给出日期/地址/薪资/身份证等、"
+            "或者让你填某个空缺字段。\n"
+            "以下情况回复 NO：明确发起全新合同请求、或和合同完全无关的话题。\n"
+            "只回复 YES 或 NO，不加任何解释。"
+        )},
+        {"role": "user", "content": user_message}
+    ]
+    try:
+        resp = llm_client_v2._call_api(messages, tools=None, temperature=0)
+        answer = resp.get("choices", [{}])[0].get("message", {}).get("content", "").strip().upper()
+        return "YES" in answer
+    except Exception as e:
+        logger.warning(f"_is_contract_related LLM failed: {e}, falling back to keyword")
+        return not any(kw in user_message for kw in ["帮我出", "生成合同", "出一份", "做一份"])
+
+
+def _enrich_contract_from_roster(name: str, fields: dict) -> None:
+    """从名册自动填充合同字段（只补充缺失字段，不覆盖已有值）"""
+    from roster_module import roster_manager as _rm
+    if not _rm or not name:
+        return
+    person = _rm.query_by_name(name)
+    if not person:
+        return
+    for roster_key, field_key in [
+        ("身份证号",             "id_number"),
+        ("收款银行预留手机号",   "phone"),
+    ]:
+        if not fields.get(field_key):
+            val = person.get(roster_key, "")
+            if val:
+                fields[field_key] = val
+    if not fields.get("phone"):
+        fields["phone"] = person.get("手机号", "")
+    logger.info(f"[Contract] Roster enriched for {name}: "
+                f"id={'有' if fields.get('id_number') else '无'} "
+                f"phone={'有' if fields.get('phone') else '无'}")
 
 
 def handle_contract(user_message: str, user_id: str = "",
@@ -659,6 +719,10 @@ def handle_contract(user_message: str, user_id: str = "",
         logger.error(f"Field extraction failed: {e}")
         fields = {}
 
+    # 从名册自动填充已知字段（身份证、手机号）
+    if fields.get("name"):
+        _enrich_contract_from_roster(fields["name"], fields)
+
     # 必填字段校验（按合同类型）
     salary_label = "日薪（数字，如：200）" if contract_type == "intern" else "月薪（数字，如：20000）"
     required = [
@@ -676,11 +740,12 @@ def handle_contract(user_message: str, user_id: str = "",
                if not fields.get(key) or str(fields[key]).strip() in ("", "XXX")]
 
     if missing:
-        # 保存待处理状态（用于下一条消息的补充）
+        # 保存待处理状态（用于下一条消息的补充），包含已提取的名字供LLM意图判断使用
         with _pending_lock:
             _pending_contracts[user_id] = {
                 "original": user_message,
                 "contract_type": contract_type,
+                "name": fields.get("name", ""),
             }
         return (f"收到你要生成「{cn_name}」的需求 ✅\n"
                 f"还需要以下信息，补充后我马上生成：\n"
