@@ -1,7 +1,7 @@
 """
 Lark HR 小机器人 - v5.4
 """
-APP_VERSION = "v5.6-claude-opus"
+APP_VERSION = "v5.7-llm-routing"
 
 import os
 import re
@@ -570,23 +570,72 @@ AVAILABLE_FUNCTIONS = {
 # 工作类型关键词（用于判断是否需要 LLM 处理，而非直接统计）
 _WORK_TYPE_KEYWORDS = ["实习生", "实习", "全职", "兼职", "顾问", "代发", "劳务"]
 
+
+def _classify_contract_intent(user_message: str, sender_name: str, is_hr: bool,
+                               active_tasks: dict) -> dict:
+    """
+    LLM 统一判断消息与合同任务的关系（替代关键词路由）。
+    active_tasks: uid → state（只含 generated=False 的任务）
+    返回: {"action": "new"|"supplement"|"cancel"|"none", "task_uid": str|None}
+    """
+    task_lines = []
+    for uid, s in active_tasks.items():
+        name = s.get("name", "某员工")
+        ct   = CONTRACT_TYPE_NAMES.get(s.get("contract_type", ""), "合同")
+        task_lines.append(f"  任务ID={uid}: 正在为「{name}」出{ct}，等待补充字段")
+    tasks_ctx = "\n".join(task_lines) if task_lines else "  （无活跃任务）"
+    hr_hint   = "（HR，可发起新合同）" if is_hr else "（非HR，无权发起合同）"
+
+    system = (
+        "你是合同任务路由助手。根据消息判断意图，只输出一行结果，不加解释：\n"
+        "  NEW          — 想发起一份新合同（须含人名/岗位/类型等具体意图；纯询问能力不算）\n"
+        "  SUPP:<uid>   — 在为某个待完成任务补充字段值（含占位符如XXX也算）\n"
+        "  CANCEL:<uid> — 明确表示取消/不出了某个任务\n"
+        "  NONE         — 与合同任务无关\n\n"
+        f"当前待完成合同任务：\n{tasks_ctx}"
+    )
+    try:
+        resp = llm_client_v2._call_api(
+            [{"role": "system", "content": system},
+             {"role": "user", "content": f"发送者：{sender_name}{hr_hint}\n消息：{user_message}"}],
+            tools=None, temperature=0, timeout=8
+        )
+        raw = resp.get("choices", [{}])[0].get("message", {}).get("content", "").strip().upper()
+        logger.info(f"[contract_intent] '{user_message[:30]}' → {raw}")
+
+        if raw == "NEW":
+            return {"action": "new", "task_uid": None}
+        if raw.startswith("SUPP:"):
+            uid = raw[5:].strip()
+            if uid in active_tasks:
+                return {"action": "supplement", "task_uid": uid}
+        if raw.startswith("CANCEL:"):
+            uid = raw[7:].strip()
+            if uid in active_tasks:
+                return {"action": "cancel", "task_uid": uid}
+    except Exception as e:
+        logger.warning(f"[contract_intent] LLM failed: {e}")
+
+    return {"action": "none", "task_uid": None}
+
+
 def process_message(user_message: str, user_id: str, sender_name: str,
                     chat_id: str = "", msg_id: str = "") -> str:
     """处理用户消息"""
     logger.info(f"[{user_id}/{sender_name}] Processing: {user_message[:50]}")
+    is_hr = is_hr_user(sender_name, user_id)
 
-    # 未完成合同提醒 helper（合并到任意回复末尾）
+    # ── 未完成合同提醒（附加到任意非合同回复末尾）──────────────────────────────
     def _pr(reply: str) -> str:
         with _pending_lock:
             p = _pending_contracts.get(user_id)
         if p and not p.get("generated"):
-            p_name = p.get("name", "")
-            p_cn   = CONTRACT_TYPE_NAMES.get(p.get("contract_type", ""), "合同")
-            hint   = (p_name + "的" + p_cn) if p_name else p_cn
+            name = p.get("name", ""); ct = CONTRACT_TYPE_NAMES.get(p.get("contract_type", ""), "合同")
+            hint = (name + "的" + ct) if name else ct
             return reply + f"\n\n---\n对了，**{hint}**的合同还没填完哦，补充好信息直接@我说～"
         return reply
 
-    # 特殊命令
+    # ── 特殊命令 ────────────────────────────────────────────────────────────────
     if user_message.lower() in ["/clear", "清空", "忘记"]:
         llm_client_v2.conversation_manager.clear_history(user_id)
         with _pending_lock:
@@ -594,46 +643,55 @@ def process_message(user_message: str, user_id: str, sender_name: str,
         _save_pending()
         return "好的，之前的对话我都忘啦🙃"
 
-    # 明确取消合同任务
-    _cancel_kws = ["不出了", "不用出", "取消合同", "不生成了", "先不出", "暂时不出", "不做合同了", "合同不用了"]
+    # ── LLM 合同意图分类（覆盖所有用户的消息，跨任务感知）──────────────────────
+    # 触发条件：有任何活跃(未完成)任务，或 HR 消息含合同相关词
+    _CONTRACT_TRIGGER_KWS = ["合同", "劳动", "劳务", "实习协议", "协议", "签约", "offer"]
     with _pending_lock:
-        _has_pending_now = user_id in _pending_contracts and not _pending_contracts[user_id].get("generated")
-    if _has_pending_now and any(kw in user_message for kw in _cancel_kws):
-        with _pending_lock:
-            _pending_contracts.pop(user_id, None)
-        _save_pending()
-        return "好的，合同先不出了，需要的时候再跟我说～"
+        _active_tasks = {uid: s for uid, s in _pending_contracts.items()
+                         if not s.get("generated")}
 
-    is_hr = is_hr_user(sender_name, user_id)
+    if _active_tasks or (is_hr and any(kw in user_message for kw in _CONTRACT_TRIGGER_KWS)):
+        ci = _classify_contract_intent(user_message, sender_name, is_hr, _active_tasks)
 
-    # ── 合同追问状态（用户已发起合同但字段不全）──
+        if ci["action"] == "new":
+            if not is_hr:
+                return _pr("合同生成功能仅限HR使用哦～")
+            return handle_contract(user_message, user_id, chat_id, msg_id)
+
+        elif ci["action"] == "supplement":
+            task_uid = ci["task_uid"]
+            with _pending_lock:
+                task = _pending_contracts.get(task_uid, {})
+            merged = task.get("original", "") + " " + user_message
+            with _pending_lock:
+                _pending_contracts.pop(task_uid, None)
+            _save_pending()
+            return handle_contract(merged, task_uid, chat_id, msg_id)
+
+        elif ci["action"] == "cancel":
+            task_uid = ci["task_uid"]
+            with _pending_lock:
+                task = _pending_contracts.pop(task_uid, {})
+            _save_pending()
+            name = task.get("name", ""); ct = CONTRACT_TYPE_NAMES.get(task.get("contract_type", ""), "合同")
+            return f"好的，{(name+'的'+ct) if name else ct}先不出了，有需要再说～"
+        # action == "none": fall through to normal handling
+
+    # ── 已生成合同的字段更新（关键词兜底）───────────────────────────────────────
     with _pending_lock:
-        pending = _pending_contracts.get(user_id)
+        _gen_task = _pending_contracts.get(user_id)
+    if _gen_task and _gen_task.get("generated"):
+        _update_kws = ["改", "换", "更新", "重新生成", "重新出", "把", "改成", "换成",
+                       "加进", "加上", "修改", "调整", "入职", "签订", "日期", "薪资",
+                       "地址", "身份证", "电话", "手机", "岗位", "时长"]
+        if any(kw in user_message for kw in _update_kws):
+            merged = _gen_task["original"] + " " + user_message
+            with _pending_lock:
+                _pending_contracts.pop(user_id, None)
+            _save_pending()
+            return handle_contract(merged, user_id, chat_id, msg_id)
 
-    if pending:
-        if pending.get("generated"):
-            # 已生成过：只在用户明确补充/修改字段时重新生成（不受"合同"关键词限制）
-            _update_kws = ["改", "换", "更新", "重新生成", "重新出", "把", "改成", "换成",
-                           "加进", "加上", "修改", "调整", "入职", "签订", "日期", "薪资",
-                           "地址", "身份证", "电话", "手机", "岗位", "时长"]
-            if any(kw in user_message for kw in _update_kws):
-                merged = pending["original"] + " " + user_message
-                with _pending_lock:
-                    _pending_contracts.pop(user_id, None)
-                _save_pending()
-                return handle_contract(merged, user_id, chat_id, msg_id)
-            # 不是字段补充，不拦截，继续正常路由
-        else:
-            # 尚未生成过：用LLM判断是否是对这份合同的补充
-            if _is_contract_related(user_message, pending):
-                merged = pending["original"] + " " + user_message
-                with _pending_lock:
-                    _pending_contracts.pop(user_id, None)
-                _save_pending()
-                return handle_contract(merged, user_id, chat_id, msg_id)
-            # LLM判断为无关：正常处理，末尾由 _pr() 统一附加提醒
-
-    # ── 离职追问状态 ──
+    # ── 离职追问状态 ─────────────────────────────────────────────────────────────
     with _pending_offboarding_lock:
         _has_pending_ob = user_id in _pending_offboardings
     if _has_pending_ob:
@@ -647,37 +705,16 @@ def process_message(user_message: str, user_id: str, sender_name: str,
             if result is not None:
                 return result
 
-    # 合同生成（仅HR）
-    # 排除纯能力询问："能出合同吗"、"还能出合同吗"、"你会合同吗" 等 → 交给 LLM 回答
-    _CONTRACT_INQUIRY_KWS = ["能", "会", "可以", "还能", "支持", "帮我", "能不能", "会不会", "可不可以"]
-    _is_contract_inquiry = (
-        any(kw in user_message for kw in _CONTRACT_INQUIRY_KWS)
-        and not any(kw in user_message for kw in ["帮我出", "帮我生成", "帮我做", "生成", "出一份", "做一份", "起草"])
-    )
-    if any(kw in user_message for kw in ["合同", "劳动合同", "劳务合同", "实习合同"]):
-        if _is_contract_inquiry:
-            pass  # 能力询问，继续往下走交给 LLM
-        elif not is_hr:
-            return _pr("合同生成功能仅限HR使用哦～")
-        else:
-            return handle_contract(user_message, user_id, chat_id, msg_id)
-
-    # 离职流程（仅HR）
+    # ── 离职流程（仅HR，关键词明确）─────────────────────────────────────────────
     _OFFBOARDING_KWS = ["离职", "解除合同", "终止合同", "辞职", "辞退", "最后工作日"]
     _OFFBOARDING_INQUIRY_KWS = ["能", "会", "可以", "支持", "什么是", "怎么", "流程", "步骤"]
-    _is_offboarding_inquiry = any(kw in user_message for kw in _OFFBOARDING_INQUIRY_KWS)
     if any(kw in user_message for kw in _OFFBOARDING_KWS):
-        if _is_offboarding_inquiry:
-            pass  # 流程询问，交给 LLM 回答
-        elif not is_hr:
-            return _pr("离职流程由HR处理，有疑问请联系HR～")
-        else:
+        if not any(kw in user_message for kw in _OFFBOARDING_INQUIRY_KWS):
+            if not is_hr:
+                return _pr("离职流程由HR处理，有疑问请联系HR～")
             return handle_offboarding(user_message, user_id, chat_id, msg_id)
 
-    # 入职查询 → 交给 LLM（知识库已内嵌在 system prompt 中，LLM 根据 is_hr 决定显示哪些内容）
-    # （原 get_onboarding_info 已移除，LLM 直接回答）
-
-    # 薪资敏感信息：HR 可查，非HR 拒绝
+    # ── 薪资敏感信息 ─────────────────────────────────────────────────────────────
     if any(kw in user_message for kw in ["薪资", "工资", "底薪", "绩效", "涨薪", "薪酬", "到手", "用人成本"]):
         if not is_hr:
             return _pr("薪资属于保密信息，具体请直接联系HR确认 🙏")
@@ -686,26 +723,23 @@ def process_message(user_message: str, user_id: str, sender_name: str,
             return _pr(query_member(names[0], is_hr=True))
         return _pr("请告诉我要查哪位同学的薪资信息～")
 
-    # 名册精确查询（单人查询）—— 有未完成合同时跳过，避免把合同字段当人名查
+    # ── 名册精确查询（无活跃合同任务时才走，避免把字段当人名）──────────────────
     _single_person_kws = ["是谁", "的资料", "的信息", "职位", "岗位", "身份证", "银行卡",
                           "电话", "手机", "联系方式", "联系电话", "手机号"]
-    with _pending_lock:
-        _active_pending = user_id in _pending_contracts and not _pending_contracts[user_id].get("generated")
-    if (not _active_pending
+    if (not _active_tasks
             and any(kw in user_message for kw in _single_person_kws)
             and not any(kw in user_message for kw in _WORK_TYPE_KEYWORDS + ["多少", "几个", "列表", "所有", "部门"])):
         names = re.findall(r'[\u4e00-\u9fa5]{2,4}', user_message)
         if names:
             return _pr(query_member(names[0], is_hr=is_hr))
 
-    # 纯总人数统计（无具体类型词、无部门词时直接返回）
+    # ── 纯总人数统计 ─────────────────────────────────────────────────────────────
     _DEPT_KEYWORDS = ["部门", "部", "市场", "产品", "技术", "运营", "销售", "人力", "行政", "财务"]
     if any(kw in user_message for kw in ["多少人", "人数", "总人数", "统计"]):
         if not any(kw in user_message for kw in _WORK_TYPE_KEYWORDS + _DEPT_KEYWORDS):
             return _pr(get_roster_stats())
 
-    # 其他（含复杂名册查询、实习生列表等）交给 LLM + 工具
-    # per-request 闭包：query_member 携带 is_hr 上下文
+    # ── 其他 → LLM + 工具 ────────────────────────────────────────────────────────
     _available_functions = {
         "query_member": lambda keyword: query_member(keyword, is_hr=is_hr),
         "get_roster_stats": tool_get_roster_stats,
