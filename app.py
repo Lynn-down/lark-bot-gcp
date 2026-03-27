@@ -574,24 +574,34 @@ _WORK_TYPE_KEYWORDS = ["实习生", "实习", "全职", "兼职", "顾问", "代
 def _classify_contract_intent(user_message: str, sender_name: str, is_hr: bool,
                                active_tasks: dict) -> dict:
     """
-    LLM 统一判断消息与合同任务的关系（替代关键词路由）。
+    LLM 判断消息与合同任务的关系，纯 LLM 路由，不做任何关键词预判。
     active_tasks: uid → state（只含 generated=False 的任务）
     返回: {"action": "new"|"supplement"|"cancel"|"none", "task_uid": str|None}
     """
     task_lines = []
     for uid, s in active_tasks.items():
-        name = s.get("name", "某员工")
-        ct   = CONTRACT_TYPE_NAMES.get(s.get("contract_type", ""), "合同")
-        task_lines.append(f"  任务ID={uid}: 正在为「{name}」出{ct}，等待补充字段")
+        name    = s.get("name", "某员工")
+        ct      = CONTRACT_TYPE_NAMES.get(s.get("contract_type", ""), "合同")
+        missing = s.get("missing", [])
+        miss_str = "、".join(missing[:4]) if missing else "部分字段"
+        task_lines.append(
+            f"  任务ID={uid}: 正在为「{name}」出{ct}，"
+            f"机器人上一条消息询问了：{miss_str}"
+        )
     tasks_ctx = "\n".join(task_lines) if task_lines else "  （无活跃任务）"
     hr_hint   = "（HR，可发起新合同）" if is_hr else "（非HR，无权发起合同）"
 
     system = (
-        "你是合同任务路由助手。根据消息判断意图，只输出一行结果，不加解释：\n"
+        "你是合同任务路由助手。根据消息内容判断意图，只输出一行结果，不加任何解释。\n\n"
+        "输出格式：\n"
         "  NEW          — 想发起一份新合同（须含人名/岗位/类型等具体意图；纯询问能力不算）\n"
-        "  SUPP:<uid>   — 在为某个待完成任务补充字段值（含占位符如XXX也算）\n"
-        "  CANCEL:<uid> — 明确表示取消/不出了某个任务\n"
-        "  NONE         — 与合同任务无关\n\n"
+        "  SUPP:<uid>   — 在为某个待完成任务补充信息，包括：\n"
+        "                   · 提供了具体字段值（日期、地址、证件号等）\n"
+        "                   · 用 XXX 作占位符\n"
+        "                   · 用简短肯定词（对/好/是/确认/嗯/OK）回应刚才被询问的字段\n"
+        "                   · 说'其他用XXX'/'剩下的用XXX'/'按之前说的'\n"
+        "  CANCEL:<uid> — 明确表示不出了/取消某个任务\n"
+        "  NONE         — 与合同任务完全无关（闲聊、问功能、问其他业务等）\n\n"
         f"当前待完成合同任务：\n{tasks_ctx}"
     )
     try:
@@ -607,12 +617,12 @@ def _classify_contract_intent(user_message: str, sender_name: str, is_hr: bool,
         if raw_upper == "NEW":
             return {"action": "new", "task_uid": None}
         if raw_upper.startswith("SUPP:"):
-            uid = raw[5:].strip()   # 保留原始大小写
+            uid    = raw[5:].strip()
             actual = next((k for k in active_tasks if k.lower() == uid.lower()), None)
             if actual:
                 return {"action": "supplement", "task_uid": actual}
         if raw_upper.startswith("CANCEL:"):
-            uid = raw[7:].strip()
+            uid    = raw[7:].strip()
             actual = next((k for k in active_tasks if k.lower() == uid.lower()), None)
             if actual:
                 return {"action": "cancel", "task_uid": actual}
@@ -654,80 +664,32 @@ def process_message(user_message: str, user_id: str, sender_name: str,
                          if not s.get("generated")}
 
     if _active_tasks or (is_hr and any(kw in user_message for kw in _CONTRACT_TRIGGER_KWS)):
+        # 不管当前用户是否有任务，统一走 LLM 分类，不做关键词预判
+        ci = _classify_contract_intent(user_message, sender_name, is_hr, _active_tasks)
 
-        # ① 当前用户自己有未完成任务
-        if user_id in _active_tasks:
-            # 快速判断：消息是否包含合同字段信息（不需要 LLM，直接路由）
-            _field_patterns = [
-                r'\d{4}[-/年]\d{1,2}[-/月]\d{1,2}',                                    # 日期
-                r'[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[012])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]',  # 身份证
-                r'1[3-9]\d{9}',                                                          # 手机
-                r'[省市区县街道乡镇号楼室]',                                              # 地址
-            ]
-            _field_kws = ["XXX", "xxx", "日期", "身份证", "户籍", "联系地址", "联系电话",
-                          "手机号", "签订", "开始日期", "入职", "岗位", "职位", "薪资",
-                          "日薪", "月薪", "元/天", "元/月", "地址", "邮编"]
-            _is_field_msg = (
-                any(re.search(p, user_message) for p in _field_patterns)
-                or any(kw in user_message for kw in _field_kws)
-            )
+        if ci["action"] == "new":
+            if not is_hr:
+                return _pr("合同生成功能仅限HR使用哦～")
+            return handle_contract(user_message, user_id, chat_id, msg_id)
 
-            if _is_field_msg:
-                # 有字段信息，直接合并进合同任务
-                with _pending_lock:
-                    task = _pending_contracts.get(user_id, {})
-                merged = task.get("original", "") + " " + user_message
-                with _pending_lock:
-                    _pending_contracts.pop(user_id, None)
-                _save_pending()
-                return handle_contract(merged, user_id, chat_id, msg_id)
+        elif ci["action"] == "supplement":
+            task_uid = ci["task_uid"]
+            with _pending_lock:
+                task = _pending_contracts.get(task_uid, {})
+            merged = task.get("original", "") + " " + user_message
+            with _pending_lock:
+                _pending_contracts.pop(task_uid, None)
+            _save_pending()
+            return handle_contract(merged, task_uid, chat_id, msg_id)
 
-            # 没有字段信息 → LLM 判断：是在补充/取消？还是真的在问别的？
-            ci = _classify_contract_intent(user_message, sender_name, is_hr, _active_tasks)
-            if ci["action"] in ("supplement", "cancel") and ci.get("task_uid") == user_id:
-                if ci["action"] == "cancel":
-                    with _pending_lock:
-                        task = _pending_contracts.pop(user_id, {})
-                    _save_pending()
-                    name = task.get("name", ""); ct = CONTRACT_TYPE_NAMES.get(task.get("contract_type", ""), "合同")
-                    return f"好的，{(name+'的'+ct) if name else ct}先不出了，有需要再说～"
-                with _pending_lock:
-                    task = _pending_contracts.get(user_id, {})
-                merged = task.get("original", "") + " " + user_message
-                with _pending_lock:
-                    _pending_contracts.pop(user_id, None)
-                _save_pending()
-                return handle_contract(merged, user_id, chat_id, msg_id)
-            # LLM 判断为无关 → 正常回答，末尾由 _pr() 附加提醒
-            # fall through
-
-        # ② 其他用户 / 当前用户无任务 → LLM 分类
-        else:
-            ci = _classify_contract_intent(user_message, sender_name, is_hr, _active_tasks)
-
-            if ci["action"] == "new":
-                if not is_hr:
-                    return _pr("合同生成功能仅限HR使用哦～")
-                return handle_contract(user_message, user_id, chat_id, msg_id)
-
-            elif ci["action"] == "supplement":
-                task_uid = ci["task_uid"]
-                with _pending_lock:
-                    task = _pending_contracts.get(task_uid, {})
-                merged = task.get("original", "") + " " + user_message
-                with _pending_lock:
-                    _pending_contracts.pop(task_uid, None)
-                _save_pending()
-                return handle_contract(merged, task_uid, chat_id, msg_id)
-
-            elif ci["action"] == "cancel":
-                task_uid = ci["task_uid"]
-                with _pending_lock:
-                    task = _pending_contracts.pop(task_uid, {})
-                _save_pending()
-                name = task.get("name", ""); ct = CONTRACT_TYPE_NAMES.get(task.get("contract_type", ""), "合同")
-                return f"好的，{(name+'的'+ct) if name else ct}先不出了，有需要再说～"
-            # action == "none": fall through to normal handling
+        elif ci["action"] == "cancel":
+            task_uid = ci["task_uid"]
+            with _pending_lock:
+                task = _pending_contracts.pop(task_uid, {})
+            _save_pending()
+            name = task.get("name", ""); ct = CONTRACT_TYPE_NAMES.get(task.get("contract_type", ""), "合同")
+            return f"好的，{(name+'的'+ct) if name else ct}先不出了，有需要再说～"
+        # action == "none": fall through，正常回答，末尾 _pr() 附加提醒 to normal handling
 
     # ── 已生成合同的字段更新（关键词兜底）───────────────────────────────────────
     with _pending_lock:
@@ -914,12 +876,13 @@ def handle_contract(user_message: str, user_id: str = "",
                if not fields.get(key) or str(fields[key]).strip() == ""]
 
     if missing:
-        # 保存待处理状态（用于下一条消息的补充），包含已提取的名字供LLM意图判断使用
+        # 保存待处理状态，含缺失字段供 LLM 分类时参考上下文
         with _pending_lock:
             _pending_contracts[user_id] = {
-                "original": user_message,
+                "original":      user_message,
                 "contract_type": contract_type,
-                "name": fields.get("name", ""),
+                "name":          fields.get("name", ""),
+                "missing":       missing,
             }
         _save_pending()
         return (f"收到你要生成「{cn_name}」的需求 ✅\n"
