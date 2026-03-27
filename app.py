@@ -101,6 +101,31 @@ def get_access_token() -> str:
 # 初始化 HR 看板 Bitable（必须在 get_access_token 定义之后）
 _hr_board = init_hr_board(get_access_token)
 
+# 机器人自身的 open_id（用于群聊 @mention 过滤，启动时自动获取）
+_BOT_OPEN_ID: str = ""
+
+def _fetch_bot_open_id() -> None:
+    """从 Lark API 获取机器人自己的 open_id 并缓存到 _BOT_OPEN_ID"""
+    global _BOT_OPEN_ID
+    try:
+        token = get_access_token()
+        resp = requests.get(
+            f"{OPEN_API_BASE}/bot/v3/info",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        data = resp.json()
+        if data.get("code") == 0:
+            _BOT_OPEN_ID = data["bot"]["open_id"]
+            logger.info(f"Bot open_id fetched: {_BOT_OPEN_ID}")
+        else:
+            logger.warning(f"bot/v3/info returned non-zero code: {data}")
+    except Exception as e:
+        logger.error(f"Failed to fetch bot open_id: {e}")
+
+# 启动时异步拉取（避免阻塞 Flask 启动）
+threading.Thread(target=_fetch_bot_open_id, daemon=True).start()
+
 
 def is_hr_user(sender_name: str, sender_id: str = "") -> bool:
     """判断用户是否是HR"""
@@ -1128,10 +1153,16 @@ def handle_im_message(data) -> None:
         chat_type = getattr(message, 'chat_type', 'p2p')
         if chat_type == "group":
             mentions = body.get("mentions", [])
-            bot_open_id = "ou_bf1b5942e692731fd47e364343e44587"
-            if not any(m.get("id", {}).get("open_id") == bot_open_id for m in mentions):
-                logger.info("Group message without @mention, skipping")
+            if not mentions:
+                logger.info("Group message without any @mention, skipping")
                 return
+            # 有 mentions 时，若已拿到 bot open_id 则精确匹配；否则放行所有 @mention
+            if _BOT_OPEN_ID:
+                if not any(m.get("id", {}).get("open_id") == _BOT_OPEN_ID for m in mentions):
+                    logger.info(f"Group @mention not targeting bot ({_BOT_OPEN_ID}), skipping")
+                    return
+            else:
+                logger.info("Bot open_id not yet cached, allowing any @mention in group")
 
         if not text:
             logger.info("Empty message")
