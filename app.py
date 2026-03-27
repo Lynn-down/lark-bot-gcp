@@ -600,19 +600,22 @@ def _classify_contract_intent(user_message: str, sender_name: str, is_hr: bool,
              {"role": "user", "content": f"发送者：{sender_name}{hr_hint}\n消息：{user_message}"}],
             tools=None, temperature=0, timeout=8
         )
-        raw = resp.get("choices", [{}])[0].get("message", {}).get("content", "").strip().upper()
+        raw       = resp.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        raw_upper = raw.upper()
         logger.info(f"[contract_intent] '{user_message[:30]}' → {raw}")
 
-        if raw == "NEW":
+        if raw_upper == "NEW":
             return {"action": "new", "task_uid": None}
-        if raw.startswith("SUPP:"):
-            uid = raw[5:].strip()
-            if uid in active_tasks:
-                return {"action": "supplement", "task_uid": uid}
-        if raw.startswith("CANCEL:"):
+        if raw_upper.startswith("SUPP:"):
+            uid = raw[5:].strip()   # 保留原始大小写
+            actual = next((k for k in active_tasks if k.lower() == uid.lower()), None)
+            if actual:
+                return {"action": "supplement", "task_uid": actual}
+        if raw_upper.startswith("CANCEL:"):
             uid = raw[7:].strip()
-            if uid in active_tasks:
-                return {"action": "cancel", "task_uid": uid}
+            actual = next((k for k in active_tasks if k.lower() == uid.lower()), None)
+            if actual:
+                return {"action": "cancel", "task_uid": actual}
     except Exception as e:
         logger.warning(f"[contract_intent] LLM failed: {e}")
 
@@ -651,6 +654,26 @@ def process_message(user_message: str, user_id: str, sender_name: str,
                          if not s.get("generated")}
 
     if _active_tasks or (is_hr and any(kw in user_message for kw in _CONTRACT_TRIGGER_KWS)):
+
+        # ① 当前用户自己有未完成任务 → sticky：除非取消，否则直接合并继续
+        if user_id in _active_tasks:
+            ci = _classify_contract_intent(user_message, sender_name, is_hr, _active_tasks)
+            if ci["action"] == "cancel" and ci.get("task_uid") == user_id:
+                with _pending_lock:
+                    task = _pending_contracts.pop(user_id, {})
+                _save_pending()
+                name = task.get("name", ""); ct = CONTRACT_TYPE_NAMES.get(task.get("contract_type", ""), "合同")
+                return f"好的，{(name+'的'+ct) if name else ct}先不出了，有需要再说～"
+            # 不管 LLM 说 NONE/NEW/SUPP，只要不是 cancel，都粘住合同任务继续
+            with _pending_lock:
+                task = _pending_contracts.get(user_id, {})
+            merged = task.get("original", "") + " " + user_message
+            with _pending_lock:
+                _pending_contracts.pop(user_id, None)
+            _save_pending()
+            return handle_contract(merged, user_id, chat_id, msg_id)
+
+        # ② 其他用户发消息 / 当前用户无任务 → LLM 分类
         ci = _classify_contract_intent(user_message, sender_name, is_hr, _active_tasks)
 
         if ci["action"] == "new":
